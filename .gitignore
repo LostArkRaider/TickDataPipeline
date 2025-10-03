@@ -5,6 +5,9 @@ Manifest.toml
 *.jl.cov
 *.jl.*.cov
 *.jl.mem
+*.txt
+*.jld2
+*.csv
 
 # OS-specific
 .DS_Store
