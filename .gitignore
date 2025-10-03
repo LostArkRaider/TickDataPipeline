@@ -1,0 +1,11 @@
+# Ignore Julia build and environment files
+Manifest.toml
+.vscode/
+.idea/
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+
+# OS-specific
+.DS_Store
+Thumbs.db

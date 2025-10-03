@@ -1,0 +1,4 @@
+name = "TickDataPipeline"
+uuid = "1321d1ed-360f-4df0-b264-cb3ad27dd90d"
+authors = ["Keith <ceo@bytezoom.com>"]
+version = "0.1.0"
