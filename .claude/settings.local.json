@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(julia:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(sed:*)",
+      "Bash(findstr:*)",
+      "Bash(tee:*)",
+      "Bash(for:*)",
+      "Bash(do if [ -f \"$file\" ])",
+      "Bash(then echo \"Processing: $file\")",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(set JULIA_TEST_VERBOSE=true)",
+      "Bash(set TEST_VERBOSITY=2)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(JULIA_TEST_VERBOSE=true julia --project=. test/generate_config_validation_report.jl)",
+      "Bash(dir /O-D \"C:\\Users\\Keith\\source\\repos\\Julia\\ComplexBiquadGA\\scripts922\\*.jl\")",
+      "Bash(timeout 30 julia:*)",
+      "Bash(timeout:*)",
+      "Bash(dir:*)",
+      "Bash(mkdir:*)",
+      "Bash(taskkill:*)",
+      "Read(//c/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

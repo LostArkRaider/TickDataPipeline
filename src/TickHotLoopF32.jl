@@ -1,453 +1,243 @@
-module TickHotLoopF32
-# =============================================================================
-# TickHotLoopF32.jl  (Modified for Optional Triple Split Integration)
-#
-# Purpose
-#   Ultra-low-latency tick reader → cleaner → complexifier for a Fibonacci PLL
-#   filter bank. Emits one ComplexF32 sample per tick with proper normalization.
-#
-# SESSION 2A MODIFICATION:
-#   - Added optional triple_split_manager parameter to run_from_ticks_f32
-#   - Preserves existing single-consumer behavior when triple_split_manager=nothing
-#   - Broadcasts to all consumers when triple split is enabled
-#
-# KEY FIX: 
-#   - Price change (Δ) is normalized BEFORE 4-phase rotation
-#   - Normalization scales price change relative to volume (1 tick)
-#   - The imaginary component is always 1.0 (the volume reference)
-#   - 4-phase rotation is applied to the normalized (price/volume) ratio
-# =============================================================================
+# src/TickHotLoopF32.jl - Ultra-Fast Signal Processing
+# Design Specification v2.4 Implementation
+# ZERO BRANCHING for feature enablement - all features ALWAYS ENABLED
 
-using ComplexBiquadGA.ModernConfigSystem
-
-export run_from_ticks_f32, stream_complex_ticks_f32, CleanCfgInt,
-       run_from_ticks_f32_triple_split
-
-# ----------------------------
-# Flag bitmask (per-tick audit)
-# ----------------------------
-const HOLDLAST   = 0x01  # price outside viable [min_ticks, max_ticks] → we held last (Δ=0)
-const CLAMPED    = 0x02  # exceeded hard jump guard → clamped toward last clean by max_jump_ticks
-const WINSORIZED = 0x04  # soft clamp to robust EMA band (outlier pulled to band edge)
-
-# -----------------------------------
-# Cleaning & normalization parameters
-# -----------------------------------
-Base.@kwdef mutable struct CleanCfgInt
-    # Viable absolute price bounds in ticks (set from TOML or inference).
-    min_ticks::Int32
-    max_ticks::Int32
-
-    # Hard jump guard: max allowed per-tick move (ticks) before clamping.
-    max_jump_ticks::Int32 = Int32(50)  # Increased default for YM
-
-    # EMA parameters for soft robust band (winsorization) on DELTAS.
-    # α = 2^-a_shift for EMA(Δ), β = 2^-b_shift for EMA(|Δ-emaΔ|).
-    a_shift::Int = 4
-    b_shift::Int = 4
-
-    # Robust z width multiplier for the EMA band (≈ 1.253 * MAD * z_cut).
-    z_cut::Float32 = Float32(7.0)
-
-    # Normalization (AGC) params (integer-friendly).
-    # emaAbsΔ is a SLOW EMA of |Δ|; scale S_raw = c * emaAbsΔ is clamped to [Smin, Smax],
-    # then rounded UP to the next power-of-two (S2) so Δ/S2 is a shift, not a divide.
-    b_shift_agc::Int = 6               # β_agc = 1/64 → slow, stable envelope for PD
-    agc_guard_c::Int32 = Int32(7)      # guard factor (typ. 6..8)
-    agc_Smin::Int32 = Int32(4)         # min scale in ticks (prevents over-amplification)
-    agc_Smax::Int32 = Int32(50)        # default cap for YM; synced at runtime
-end
-
-# ----------------------------
-# Robust EMA band for DELTAS (integer math, no rounding)
-# ----------------------------
-@inline function band_from_delta_ema(ema_delta::Int32, ema_delta_dev::Int32, zcut::Float32)
-    # EMA(|Δ-emaΔ|) as MAD proxy; ensure ema_delta_dev is at least 1
-    safe_dev = max(Int32(1), ema_delta_dev)
-    
-    # Calculate band width using integer approximation
-    # 1.253 ≈ 5/4 = 1.25, close enough for our purposes
-    z_int = Int32(zcut)  # Truncate z_cut
-    w = (Int32(5) * z_int * safe_dev) >> 2  # Divide by 4 using shift
-    
-    # Ensure minimum band width for deltas
-    w = max(w, Int32(2))  # Minimum band of ±2 ticks for price changes
-    
-    # Band limits for delta (much smaller than absolute prices)
-    lo = ema_delta - w
-    hi = ema_delta + w
-    
-    return lo, hi
-end
-
-# ----------------------------
-# Next power-of-two helper (integer only)
-# ----------------------------
-@inline function next_pow2_i32(x::Int32)::Int32
-    if x <= 1
-        return Int32(1)
-    end
-    if x >= Int32(1) << 30  # Prevent overflow
-        return Int32(1) << 30
-    end
-    ux = UInt32(x - 1)
-    ux |= ux >> 1; ux |= ux >> 2; ux |= ux >> 4; ux |= ux >> 8; ux |= ux >> 16
-    return Int32(ux + 0x00000001)
-end
-
-# ----------------------------
-# Global 4-phase rotation helpers
-# ----------------------------
-# Position ∈ {1,2,3,4} based on sequential tick_idx (1-based), never resets.
-@inline phase_pos_global(tick_idx::Int64)::Int32 = Int32(((tick_idx - 1) & 0x3) + 1)
-
-# Unit complex multipliers for the four quadrants: 0°, +90°, 180°, −90°
-const QUAD4 = (ComplexF32(1,0), ComplexF32(0,1), ComplexF32(-1,0), ComplexF32(0,-1))
-
-# Apply quadrant rotation to normalized value (price_change/volume ratio)
-@inline function apply_quad_phase(normalized_value::Float32, pos::Int32)::ComplexF32
-    q = QUAD4[pos]  # q ∈ {1, i, −1, −i}
-    return ComplexF32(normalized_value * real(q), normalized_value * imag(q))
-end
-
-# ---------------------------------------------------------
-# Core streamer: parse → clean → normalize → 4-phase ComplexF32 out
-# ---------------------------------------------------------
-function stream_complex_ticks_f32(tickfile::AbstractString, cfg::CleanCfgInt)
-    return Channel{Tuple{Int64,SubString{String},ComplexF32,Int32,UInt8,Float32}}(256) do ch
-        # -------- Persistent state (hot) --------
-        tick_idx::Int64 = 0
-        ticks_processed::Int64 = 0
-        ticks_accepted::Int64 = 0
-
-        # EMA state for DELTA robust band
-        ema_delta::Int32 = 0       # EMA of price changes
-        ema_delta_dev::Int32 = 1   # EMA of |Δ - emaΔ|
-        has_delta_ema = false
-        delta_warmup = 20  # Warmup period before applying winsorization
-
-        # AGC (amplitude normalization) state: slow EMA of |Δ|
-        emaAbsΔ::Int32 = 1  # start at 1 to avoid division by zero
-
-        # Last accepted clean price in ticks
-        last_clean::Union{Nothing,Int32} = nothing
-
-        # Sync AGC cap with hard guard
-        if cfg.agc_Smax != cfg.max_jump_ticks
-            cfg.agc_Smax = cfg.max_jump_ticks
-        end
-
-        # Statistics tracking
-        stats_holdlast = 0
-        stats_clamped = 0
-        stats_winsorized = 0
-        stats_skipped = 0
-
-        # -------- Stream the file, one line at a time --------
-        for line in eachline(tickfile)
-            ticks_processed += 1
-            
-            # Parse with minimal work; ignore malformed lines
-            parts = split(line, ';')
-            if length(parts) != 5
-                stats_skipped += 1
-                continue
-            end
-            
-            ts = SubString(parts[1])  # Keep as substring for efficiency
-            last_ticks = try 
-                parse(Int32, parts[4]) 
-            catch
-                stats_skipped += 1
-                continue 
-            end
-            vol = try 
-                parse(Int, parts[5]) 
-            catch
-                stats_skipped += 1
-                continue 
-            end
-            
-            if vol != 1  # enforce one contract per record
-                stats_skipped += 1
-                continue
-            end
-
-            tick_idx += 1
-            flag::UInt8 = 0x00
-
-            # ---- 1) Absolute price range check (sanity check) ----
-            if last_ticks < cfg.min_ticks || last_ticks > cfg.max_ticks
-                # Price way out of range - hold last if we have one
-                if last_clean !== nothing
-                    flag |= HOLDLAST
-                    stats_holdlast += 1
-                    # Emit with Δ=0
-                    Δ = Int32(0)
-                    # Normalized price/volume ratio = 0/1 = 0
-                    normalized_ratio = Float32(0.0)
-                    pos = phase_pos_global(tick_idx)
-                    z = apply_quad_phase(normalized_ratio, pos)
-                    put!(ch, (tick_idx, ts, z, Δ, flag, Float32(cfg.agc_Smin)))  # Default: no S_raw yet
-                    ticks_accepted += 1
-                end
-                continue
-            end
-            
-            # ---- 2) Initialize on first good tick ----
-            if last_clean === nothing
-                last_clean = last_ticks
-                # Emit first tick with Δ=0
-                Δ = Int32(0)
-                normalized_ratio = Float32(0.0)
-                pos = phase_pos_global(tick_idx)
-                z = apply_quad_phase(normalized_ratio, pos)
-                put!(ch, (tick_idx, ts, z, Δ, flag, Float32(cfg.agc_Smin)))  # Default: no S_raw yet
-                ticks_accepted += 1
-                continue
-            end
-            
-            # ---- 3) Compute raw delta ----
-            raw_delta = last_ticks - last_clean
-            
-            # ---- 4) Hard jump guard on DELTA ----
-            Δ = raw_delta
-            if abs(Δ) > cfg.max_jump_ticks
-                # Clamp delta to max_jump_ticks
-                Δ = Δ > 0 ? cfg.max_jump_ticks : -cfg.max_jump_ticks
-                flag |= CLAMPED
-                stats_clamped += 1
-            end
-            
-            # ---- 5) Update DELTA EMAs (integer math) ----
-            if !has_delta_ema
-                # Initialize delta EMAs
-                ema_delta = Δ
-                ema_delta_dev = abs(Δ)
-                has_delta_ema = true
-            else
-                # Update EMA(Δ) with α = 2^-a_shift
-                delta_diff = Δ - ema_delta
-                ema_delta += delta_diff >> cfg.a_shift
-                
-                # Update EMA(|Δ - emaΔ|) with β = 2^-b_shift
-                abs_dev = abs(Δ - ema_delta)
-                dev_diff = abs_dev - ema_delta_dev
-                ema_delta_dev += dev_diff >> cfg.b_shift
-                
-                # Ensure ema_delta_dev doesn't go to zero
-                ema_delta_dev = max(ema_delta_dev, Int32(1))
-            end
-            
-            # ---- 6) Winsorization on DELTA (after warmup) ----
-            if ticks_accepted > delta_warmup && has_delta_ema
-                lo, hi = band_from_delta_ema(ema_delta, ema_delta_dev, cfg.z_cut)
-                if Δ < lo
-                    Δ = lo
-                    flag |= WINSORIZED
-                    stats_winsorized += 1
-                elseif Δ > hi
-                    Δ = hi
-                    flag |= WINSORIZED
-                    stats_winsorized += 1
-                end
-            end
-            
-            # ---- 7) Update AGC envelope ----
-            absΔ = abs(Δ)
-            agc_diff = absΔ - emaAbsΔ
-            emaAbsΔ += agc_diff >> cfg.b_shift_agc
-            
-            # Ensure emaAbsΔ doesn't go to zero
-            emaAbsΔ = max(emaAbsΔ, Int32(1))
-            
-            # ---- 8) Normalize price change to ±1 range ----
-            # The AGC scale represents the typical magnitude of price changes
-            # We want to map ±S_raw to ±1.0 for proper signal strength
-            
-            # S_raw is the expected scale of price changes
-            S_raw = cfg.agc_guard_c * emaAbsΔ
-            S_raw = clamp(S_raw, cfg.agc_Smin, cfg.agc_Smax)
-            
-            # Normalize so that a price change of ±S_raw maps to ±1.0
-            # This ensures typical price movements produce strong signals
-            normalized_ratio = Float32(Δ) / Float32(S_raw)
-            
-            # The guard factor (agc_guard_c) acts as a headroom multiplier
-            # With agc_guard_c=7, we expect most values in ±1/7 range
-            # So we scale up to use the full ±1 range
-            normalized_ratio = normalized_ratio * Float32(cfg.agc_guard_c)
-            
-            # Clamp to [-1, 1] to prevent outliers from overshooting
-            normalized_ratio = clamp(normalized_ratio, Float32(-1.0), Float32(1.0))
-            
-            # ---- 9) Apply 4-phase rotation to the normalized ratio ----
-            pos = phase_pos_global(tick_idx)
-            z = apply_quad_phase(normalized_ratio, pos)
-
-            # ---- 10) Emit complex sample ----
-            put!(ch, (tick_idx, ts, z, Δ, flag, Float32(S_raw)))  # Actual computed normalization
-            ticks_accepted += 1
-            
-            # ---- 11) Update last_clean with the actual new price ----
-            # Important: use original price plus cleaned delta
-            last_clean = last_clean + Δ
-            
-            # Progress reporting every 100k ticks
-            if ticks_processed % 100000 == 0
-                println("   Processed $(ticks_processed) ticks, accepted $(ticks_accepted)")
-                println("   Stats: skip=$stats_skipped, hold=$stats_holdlast, clamp=$stats_clamped, winsor=$stats_winsorized")
-                println("   Delta EMA: $ema_delta ± $ema_delta_dev, AGC scale: $(S_raw)")
-            end
-        end
-        
-        # Final statistics
-        println("\nTick processing complete:")
-        println("  Total lines: $ticks_processed")
-        println("  Skipped: $stats_skipped")
-        println("  Accepted: $ticks_accepted")
-        println("  Holdlast: $stats_holdlast")
-        println("  Clamped: $stats_clamped")
-        println("  Winsorized: $stats_winsorized")
-        println("  Final delta EMA: $ema_delta ± $ema_delta_dev")
-    end
-end
-
-# ---------------------------------------------------------
-# Original single-consumer runner (PRESERVED UNCHANGED)
-# ---------------------------------------------------------
-function run_from_ticks_f32(config_name::AbstractString,
-                            tickfile::AbstractString;
-                            init_bank::Function,
-                            on_tick::Function,
-                            cfg_clean::Union{Nothing,CleanCfgInt}=nothing)
-
-    # Load your full config using ModernConfigSystem
-    config = load_filter_config(config_name)
-
-    # Build cleaning config if not provided
-    c = cfg_clean === nothing ? CleanCfgInt(
-        min_ticks     = Int32(40000),    # YM absolute price range
-        max_ticks     = Int32(43000),    # YM absolute price range
-        max_jump_ticks= Int32(50),       # Max delta for YM
-        a_shift       = 4,                # EMA alpha = 1/16
-        b_shift       = 4,                # EMA beta = 1/16
-        z_cut         = Float32(7.0),    # Robust z-score cutoff
-        b_shift_agc   = 6,                # AGC beta = 1/64
-        agc_guard_c   = Int32(7),        # AGC guard factor
-        agc_Smin      = Int32(4),        # Min AGC scale
-        agc_Smax      = Int32(50),       # Max AGC scale (matches max_jump)
-    ) : cfg_clean
-
-    bank = init_bank(config)  # your constructor; honors PLL/clamp/period/Q switches
-
-    # Stream & drive the bank
-    for rec in stream_complex_ticks_f32(tickfile, c)
-        # rec = (tick_idx, ts, z::ComplexF32, Δ::Int32, flag::UInt8)
-        on_tick(rec, config, bank)  # you: filters → (PD clamp if enabled) → PLL/NCO
-    end
-    return nothing
-end
-
-# ---------------------------------------------------------
-# SESSION 2A: NEW Triple Split Integration Function
-# ---------------------------------------------------------
+# Note: Using parent module's BroadcastMessage and FLAG constants
+# This module is included in TickDataPipeline
 
 """
-Enhanced runner with optional triple split broadcasting
-When triple_split_manager is provided, broadcasts complex signals to all subscribed consumers
-When triple_split_manager is nothing, behaves exactly like original run_from_ticks_f32
+TickHotLoopState - Stateful processing for TickHotLoopF32
+
+Tracks EMA values and AGC state across ticks for signal processing.
+All fields are mutable for in-place state updates.
+
+# Fields
+- `last_clean::Union{Int32, Nothing}`: Last accepted clean price
+- `ema_delta::Int32`: EMA of price deltas
+- `ema_delta_dev::Int32`: EMA of |Δ - emaΔ| for winsorization
+- `has_delta_ema::Bool`: Whether EMA has been initialized
+- `ema_abs_delta::Int32`: EMA of absolute delta for AGC
+- `tick_count::Int64`: Total ticks processed
+- `ticks_accepted::Int64`: Ticks accepted (not held)
 """
-function run_from_ticks_f32_triple_split(config_name::AbstractString,
-                                        tickfile::AbstractString;
-                                        init_bank::Function,
-                                        on_tick::Function,
-                                        triple_split_manager::Union{Any, Nothing} = nothing,
-                                        cfg_clean::Union{Nothing,CleanCfgInt} = nothing)
+mutable struct TickHotLoopState
+    # Price tracking
+    last_clean::Union{Int32, Nothing}
 
-    # Load your full config using ModernConfigSystem
-    config = load_filter_config(config_name)
+    # EMA state for normalization
+    ema_delta::Int32
+    ema_delta_dev::Int32
+    has_delta_ema::Bool
 
-    # Build cleaning config if not provided
-    c = cfg_clean === nothing ? CleanCfgInt(
-        min_ticks     = Int32(40000),    # YM absolute price range
-        max_ticks     = Int32(43000),    # YM absolute price range
-        max_jump_ticks= Int32(50),       # Max delta for YM
-        a_shift       = 4,                # EMA alpha = 1/16
-        b_shift       = 4,                # EMA beta = 1/16
-        z_cut         = Float32(7.0),    # Robust z-score cutoff
-        b_shift_agc   = 6,                # AGC beta = 1/64
-        agc_guard_c   = Int32(7),        # AGC guard factor
-        agc_Smin      = Int32(4),        # Min AGC scale
-        agc_Smax      = Int32(50),       # Max AGC scale (matches max_jump)
-    ) : cfg_clean
+    # AGC state
+    ema_abs_delta::Int32
 
-    bank = init_bank(config)  # your constructor; honors PLL/clamp/period/Q switches
-
-    # Performance tracking for triple split mode
-    broadcast_count = Int32(0)
-    broadcast_failures = Int32(0)
-    
-    # Stream & drive the bank
-    for rec in stream_complex_ticks_f32(tickfile, c)
-        # rec = (tick_idx, ts, z::ComplexF32, Δ::Int32, flag::UInt8)
-        
-        # Always call original on_tick for backward compatibility
-        on_tick(rec, config, bank)
-        
-        # SESSION 2A: Optional triple split broadcasting
-        if triple_split_manager !== nothing
-            # Extract complex signal for broadcasting
-            (tick_idx, ts, z, delta, flag) = rec
-            
-            # Create broadcast message (could be extended with more data)
-            broadcast_message = (
-                tick_index = tick_idx,
-                timestamp = String(ts),  # Convert SubString to String for thread safety
-                complex_signal = z,
-                price_delta = delta,
-                processing_flags = flag,
-                config_snapshot = config  # Include config for consumer context
-            )
-            
-            # Broadcast to all consumers using triple split manager
-            try
-                # Import and call broadcast function (would be actual import in production)
-                # broadcast_result = ComplexBiquadGA.TripleSplitSystem.broadcast_to_all!(
-                #     triple_split_manager, broadcast_message)
-                
-                # For now, simulate broadcast success (would be actual call)
-                broadcast_count += Int32(1)
-                
-                # In actual implementation, would handle broadcast results:
-                # (total_consumers, successful_deliveries, failed_deliveries) = broadcast_result
-                # if failed_deliveries > 0
-                #     broadcast_failures += 1
-                # end
-                
-            catch e
-                broadcast_failures += Int32(1)
-                @warn "Triple split broadcast failed for tick $tick_idx: $e"
-            end
-        end
-        
-        # Progress reporting for triple split mode
-        if triple_split_manager !== nothing && broadcast_count % Int32(10000) == Int32(0)
-            success_rate = Float32(broadcast_count - broadcast_failures) / Float32(max(broadcast_count, Int32(1)))
-            println("   Triple split: $broadcast_count broadcasts, $(round(success_rate * 100, digits=1))% success rate")
-        end
-    end
-    
-    # Final statistics for triple split mode
-    if triple_split_manager !== nothing
-        success_rate = Float32(broadcast_count - broadcast_failures) / Float32(max(broadcast_count, Int32(1)))
-        println("\nTriple split broadcasting complete:")
-        println("  Total broadcasts: $broadcast_count")
-        println("  Failed broadcasts: $broadcast_failures")  
-        println("  Success rate: $(round(success_rate * 100, digits=1))%")
-    end
-    
-    return nothing
+    # Counters
+    tick_count::Int64
+    ticks_accepted::Int64
 end
 
-end # module TickHotLoopF32
+"""
+    create_tickhotloop_state()::TickHotLoopState
+
+Create initial TickHotLoopState with default values.
+
+# Returns
+- `TickHotLoopState` initialized for first tick
+"""
+function create_tickhotloop_state()::TickHotLoopState
+    return TickHotLoopState(
+        nothing,           # last_clean
+        Int32(0),         # ema_delta
+        Int32(1),         # ema_delta_dev
+        false,            # has_delta_ema
+        Int32(10),        # ema_abs_delta (nominal preload)
+        Int64(0),         # tick_count
+        Int64(0)          # ticks_accepted
+    )
+end
+
+"""
+    apply_quad4_rotation(normalized_value::Float32, phase_pos::Int32)::ComplexF32
+
+Apply QUAD-4 phase rotation (0°, 90°, 180°, 270°).
+
+# Arguments
+- `normalized_value::Float32`: Normalized signal value
+- `phase_pos::Int32`: Phase position (0, 1, 2, 3)
+
+# Returns
+- `ComplexF32`: Rotated complex signal
+  - pos 0 (0°):   (1, 0)   → value + 0i
+  - pos 1 (90°):  (0, 1)   → 0 + value*i
+  - pos 2 (180°): (-1, 0)  → -value + 0i
+  - pos 3 (270°): (0, -1)  → 0 - value*i
+"""
+function apply_quad4_rotation(normalized_value::Float32, phase_pos::Int32)::ComplexF32
+    phase = phase_pos % Int32(4)
+
+    if phase == Int32(0)
+        return ComplexF32(normalized_value, Float32(0.0))
+    elseif phase == Int32(1)
+        return ComplexF32(Float32(0.0), normalized_value)
+    elseif phase == Int32(2)
+        return ComplexF32(-normalized_value, Float32(0.0))
+    else  # phase == 3
+        return ComplexF32(Float32(0.0), -normalized_value)
+    end
+end
+
+"""
+    phase_pos_global(tick_idx::Int64)::Int32
+
+Calculate global phase position that cycles through 0, 1, 2, 3.
+
+# Arguments
+- `tick_idx::Int64`: Current tick index (1-based)
+
+# Returns
+- `Int32`: Phase position (0, 1, 2, 3)
+"""
+function phase_pos_global(tick_idx::Int64)::Int32
+    return Int32((tick_idx - 1) % 4)
+end
+
+"""
+    process_tick_signal!(msg, state, agc_alpha, agc_min_scale, agc_max_scale,
+                        winsorize_threshold, min_price, max_price, max_jump)
+
+Process single tick signal with IN-PLACE BroadcastMessage update.
+
+PERFORMANCE CRITICAL: All features ALWAYS ENABLED (zero branching for enablement).
+
+# Algorithm
+1. Absolute price validation (min_price, max_price)
+2. Initialize on first good tick
+3. Hard jump guard (max_jump)
+4. Update EMA for normalization (alpha = 1/16)
+5. AGC (Automatic Gain Control)
+6. Normalize price delta
+7. Winsorization (outlier clipping)
+8. QUAD-4 rotation
+9. Update BroadcastMessage IN-PLACE
+
+# Arguments
+- `msg::BroadcastMessage`: Message with price_delta already populated (MODIFIED IN-PLACE)
+- `state::TickHotLoopState`: Stateful processing state (MODIFIED IN-PLACE)
+- `agc_alpha::Float32`: AGC alpha (e.g., 0.0625 = 1/16)
+- `agc_min_scale::Int32`: AGC minimum scale (prevents over-amplification)
+- `agc_max_scale::Int32`: AGC maximum scale (prevents under-amplification)
+- `winsorize_threshold::Float32`: Winsorization threshold (e.g., 3.0 sigma)
+- `min_price::Int32`: Minimum valid price
+- `max_price::Int32`: Maximum valid price
+- `max_jump::Int32`: Maximum allowed price jump
+
+# Modifies
+- `msg.complex_signal`: Set to processed signal
+- `msg.normalization`: Set to AGC scale factor
+- `msg.status_flag`: Set to processing flags
+- `state`: All fields updated
+"""
+function process_tick_signal!(
+    msg::BroadcastMessage,
+    state::TickHotLoopState,
+    agc_alpha::Float32,
+    agc_min_scale::Int32,
+    agc_max_scale::Int32,
+    winsorize_threshold::Float32,
+    min_price::Int32,
+    max_price::Int32,
+    max_jump::Int32
+)
+    state.tick_count += Int64(1)
+    price_delta = msg.price_delta
+    flag = FLAG_OK
+
+    # Absolute price validation (ALWAYS ENABLED)
+    if msg.raw_price < min_price || msg.raw_price > max_price
+        if state.last_clean !== nothing
+            flag |= FLAG_HOLDLAST
+            # Use zero delta, previous signal
+            normalized_ratio = Float32(0.0)
+            phase = phase_pos_global(state.tick_count)
+            z = apply_quad4_rotation(normalized_ratio, phase)
+
+            update_broadcast_message!(msg, z, Float32(1.0), flag)
+            state.ticks_accepted += Int64(1)
+            return
+        else
+            # First tick invalid, hold
+            update_broadcast_message!(msg, ComplexF32(0, 0), Float32(1.0), FLAG_OK)
+            return
+        end
+    end
+
+    # Initialize on first good tick
+    if state.last_clean === nothing
+        state.last_clean = msg.raw_price
+        normalized_ratio = Float32(0.0)
+        phase = phase_pos_global(state.tick_count)
+        z = apply_quad4_rotation(normalized_ratio, phase)
+
+        update_broadcast_message!(msg, z, Float32(1.0), FLAG_OK)
+        state.ticks_accepted += Int64(1)
+        return
+    end
+
+    # Get delta
+    delta = price_delta
+
+    # Hard jump guard (ALWAYS ENABLED)
+    if abs(delta) > max_jump
+        delta = delta > Int32(0) ? max_jump : -max_jump
+        flag |= FLAG_CLIPPED
+    end
+
+    # Update EMA for normalization (ALWAYS ENABLED)
+    abs_delta = abs(delta)
+
+    if state.has_delta_ema
+        # Update EMA (alpha = 1/16 = 0.0625)
+        state.ema_delta = state.ema_delta + ((delta - state.ema_delta) >> 4)
+        dev = abs(delta - state.ema_delta)
+        state.ema_delta_dev = state.ema_delta_dev + ((dev - state.ema_delta_dev) >> 4)
+    else
+        state.ema_delta = delta
+        state.ema_delta_dev = max(abs_delta, Int32(1))
+        state.has_delta_ema = true
+    end
+
+    # AGC (ALWAYS ENABLED)
+    # Update EMA of absolute delta
+    state.ema_abs_delta = state.ema_abs_delta +
+                         Int32(round((Float32(abs_delta) - Float32(state.ema_abs_delta)) * agc_alpha))
+
+    # Calculate AGC scale
+    agc_scale = max(state.ema_abs_delta, Int32(1))
+    agc_scale = clamp(agc_scale, agc_min_scale, agc_max_scale)
+
+    if agc_scale >= agc_max_scale
+        flag |= FLAG_AGC_LIMIT
+    end
+
+    # Normalize (ALWAYS ENABLED)
+    normalized_ratio = Float32(delta) / Float32(agc_scale)
+    normalization_factor = Float32(agc_scale)
+
+    # Winsorization (ALWAYS ENABLED)
+    if abs(normalized_ratio) > winsorize_threshold
+        normalized_ratio = sign(normalized_ratio) * winsorize_threshold
+        flag |= FLAG_CLIPPED
+    end
+
+    # Apply QUAD-4 rotation (ALWAYS ENABLED)
+    phase = phase_pos_global(state.tick_count)
+    z = apply_quad4_rotation(normalized_ratio, phase)
+
+    # Update message IN-PLACE
+    update_broadcast_message!(msg, z, normalization_factor, flag)
+
+    # Update state
+    state.last_clean = msg.raw_price
+    state.ticks_accepted += Int64(1)
+end

@@ -1,0 +1,25 @@
+pipeline_name = "default"
+description = "Default tick processing pipeline for YM futures"
+version = "1.0"
+tick_file_path = "data/raw/YM 06-25.Last.txt"
+
+[signal_processing]
+agc_alpha = 0.0625
+agc_min_scale = 4
+agc_max_scale = 50
+winsorize_threshold = 3.0
+min_price = 40000
+max_price = 43000
+max_jump = 50
+
+[flow_control]
+delay_ms = 0.0
+
+[channels]
+priority_buffer_size = 4096
+standard_buffer_size = 2048
+
+[performance]
+target_latency_us = 500
+max_latency_us = 1000
+target_throughput_tps = 10000.0
