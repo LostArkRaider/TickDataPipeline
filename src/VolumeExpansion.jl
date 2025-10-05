@@ -8,6 +8,28 @@ using Dates
 # This module is included in TickDataPipeline, so BroadcastMessage is available
 
 """
+    nano_delay(delay_seconds::Float64)
+
+Precise delay using CPU nanosecond counter (RDTSC).
+Provides sub-millisecond accuracy on all platforms.
+
+Uses busy-wait for maximum precision - CPU intensive but accurate.
+"""
+@inline function nano_delay(delay_seconds::Float64)
+    if delay_seconds <= 0.0
+        return
+    end
+
+    delay_ns = UInt64(round(delay_seconds * 1e9))
+    start_ns = time_ns()
+    target_ns = start_ns + delay_ns
+
+    while time_ns() < target_ns
+        # Busy wait using nanosecond counter
+    end
+end
+
+"""
     encode_timestamp_to_int64(timestamp_str::String)::Int64
 
 Encode ASCII timestamp to Int64 using 8-bit character codes.
@@ -179,9 +201,9 @@ function stream_expanded_ticks(
                         price_delta
                     )
 
-                    # Apply flow control delay
+                    # Apply flow control delay using nano_delay for precision
                     if delay_ms > Float64(0.0)
-                        sleep(delay_ms / 1000.0)
+                        nano_delay(delay_ms / 1000.0)
                     end
 
                     # Send to channel

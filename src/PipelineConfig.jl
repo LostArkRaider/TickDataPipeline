@@ -29,12 +29,12 @@ struct SignalProcessingConfig
     max_jump::Int32
 
     function SignalProcessingConfig(;
-        agc_alpha::Float32 = Float32(0.0625),
+        agc_alpha::Float32 = Float32(0.125),
         agc_min_scale::Int32 = Int32(4),
         agc_max_scale::Int32 = Int32(50),
         winsorize_threshold::Float32 = Float32(3.0),
-        min_price::Int32 = Int32(40000),
-        max_price::Int32 = Int32(43000),
+        min_price::Int32 = Int32(36600),
+        max_price::Int32 = Int32(43300),
         max_jump::Int32 = Int32(50)
     )
         new(agc_alpha, agc_min_scale, agc_max_scale, winsorize_threshold,
@@ -175,8 +175,8 @@ agc_alpha = 0.0625
 agc_min_scale = 4
 agc_max_scale = 50
 winsorize_threshold = 3.0
-min_price = 40000
-max_price = 43000
+min_price = 39000
+max_price = 44000
 max_jump = 50
 
 [flow_control]
@@ -207,8 +207,8 @@ function load_config_from_toml(toml_path::String)::PipelineConfig
         agc_min_scale = Int32(get(sp, "agc_min_scale", 4)),
         agc_max_scale = Int32(get(sp, "agc_max_scale", 50)),
         winsorize_threshold = Float32(get(sp, "winsorize_threshold", 3.0)),
-        min_price = Int32(get(sp, "min_price", 40000)),
-        max_price = Int32(get(sp, "max_price", 43000)),
+        min_price = Int32(get(sp, "min_price", 39000)),
+        max_price = Int32(get(sp, "max_price", 44000)),
         max_jump = Int32(get(sp, "max_jump", 50))
     )
 

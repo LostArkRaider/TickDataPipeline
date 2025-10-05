@@ -1,5 +1,6 @@
 module TickDataPipeline
 
+# Updated: 2025-10-04 - QUAD-4 rotation fix
 using Dates
 
 # Core types (Session 1)

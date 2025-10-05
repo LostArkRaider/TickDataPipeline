@@ -1,9 +1,13 @@
 # src/TickHotLoopF32.jl - Ultra-Fast Signal Processing
 # Design Specification v2.4 Implementation
 # ZERO BRANCHING for feature enablement - all features ALWAYS ENABLED
+# Updated: 2025-10-04 - Fixed QUAD-4 rotation with constant tuple
 
 # Note: Using parent module's BroadcastMessage and FLAG constants
 # This module is included in TickDataPipeline
+
+# QUAD-4 phase rotation multipliers (0°, 90°, 180°, 270°)
+const QUAD4 = (ComplexF32(1, 0), ComplexF32(0, 1), ComplexF32(-1, 0), ComplexF32(0, -1))
 
 """
 TickHotLoopState - Stateful processing for TickHotLoopF32
@@ -60,31 +64,22 @@ end
 """
     apply_quad4_rotation(normalized_value::Float32, phase_pos::Int32)::ComplexF32
 
-Apply QUAD-4 phase rotation (0°, 90°, 180°, 270°).
+Apply QUAD-4 phase rotation by multiplying scalar value by complex phasor.
 
 # Arguments
-- `normalized_value::Float32`: Normalized signal value
+- `normalized_value::Float32`: Normalized signal value (real scalar)
 - `phase_pos::Int32`: Phase position (0, 1, 2, 3)
 
 # Returns
-- `ComplexF32`: Rotated complex signal
-  - pos 0 (0°):   (1, 0)   → value + 0i
-  - pos 1 (90°):  (0, 1)   → 0 + value*i
-  - pos 2 (180°): (-1, 0)  → -value + 0i
-  - pos 3 (270°): (0, -1)  → 0 - value*i
+- `ComplexF32`: Rotated complex signal = normalized_value × QUAD4[phase]
+  - pos 0 (0°):   value × (1, 0)   → (value, 0)
+  - pos 1 (90°):  value × (0, 1)   → (0, value)
+  - pos 2 (180°): value × (-1, 0)  → (-value, 0)
+  - pos 3 (270°): value × (0, -1)  → (0, -value)
 """
-function apply_quad4_rotation(normalized_value::Float32, phase_pos::Int32)::ComplexF32
-    phase = phase_pos % Int32(4)
-
-    if phase == Int32(0)
-        return ComplexF32(normalized_value, Float32(0.0))
-    elseif phase == Int32(1)
-        return ComplexF32(Float32(0.0), normalized_value)
-    elseif phase == Int32(2)
-        return ComplexF32(-normalized_value, Float32(0.0))
-    else  # phase == 3
-        return ComplexF32(Float32(0.0), -normalized_value)
-    end
+@inline function apply_quad4_rotation(normalized_value::Float32, phase_pos::Int32)::ComplexF32
+    phase = (phase_pos & Int32(3)) + Int32(1)  # Bitwise AND for fast modulo-4, convert to 1-based index
+    return normalized_value * QUAD4[phase]
 end
 
 """
@@ -99,7 +94,7 @@ Calculate global phase position that cycles through 0, 1, 2, 3.
 - `Int32`: Phase position (0, 1, 2, 3)
 """
 function phase_pos_global(tick_idx::Int64)::Int32
-    return Int32((tick_idx - 1) % 4)
+    return Int32((tick_idx - 1) & 3)  # Bitwise AND for fast modulo-4
 end
 
 """
@@ -149,7 +144,6 @@ function process_tick_signal!(
     max_price::Int32,
     max_jump::Int32
 )
-    state.tick_count += Int64(1)
     price_delta = msg.price_delta
     flag = FLAG_OK
 
@@ -159,7 +153,7 @@ function process_tick_signal!(
             flag |= FLAG_HOLDLAST
             # Use zero delta, previous signal
             normalized_ratio = Float32(0.0)
-            phase = phase_pos_global(state.tick_count)
+            phase = phase_pos_global(Int64(msg.tick_idx))
             z = apply_quad4_rotation(normalized_ratio, phase)
 
             update_broadcast_message!(msg, z, Float32(1.0), flag)
@@ -176,7 +170,7 @@ function process_tick_signal!(
     if state.last_clean === nothing
         state.last_clean = msg.raw_price
         normalized_ratio = Float32(0.0)
-        phase = phase_pos_global(state.tick_count)
+        phase = phase_pos_global(Int64(msg.tick_idx))
         z = apply_quad4_rotation(normalized_ratio, phase)
 
         update_broadcast_message!(msg, z, Float32(1.0), FLAG_OK)
@@ -222,7 +216,6 @@ function process_tick_signal!(
 
     # Normalize (ALWAYS ENABLED)
     normalized_ratio = Float32(delta) / Float32(agc_scale)
-    normalization_factor = Float32(agc_scale)
 
     # Winsorization (ALWAYS ENABLED)
     if abs(normalized_ratio) > winsorize_threshold
@@ -230,8 +223,15 @@ function process_tick_signal!(
         flag |= FLAG_CLIPPED
     end
 
+    # Scale to ±0.5 range for price/volume symmetry (winsorize_threshold=3.0 → ±0.5)
+    normalized_ratio = normalized_ratio / Float32(6.0)
+
+    # Normalization factor includes both AGC scale and 1/6 adjustment
+    # To recover price_delta: complex_signal_real × normalization_factor = price_delta
+    normalization_factor = Float32(agc_scale) * Float32(6.0)
+
     # Apply QUAD-4 rotation (ALWAYS ENABLED)
-    phase = phase_pos_global(state.tick_count)
+    phase = phase_pos_global(Int64(msg.tick_idx))
     z = apply_quad4_rotation(normalized_ratio, phase)
 
     # Update message IN-PLACE
