@@ -126,7 +126,7 @@ function process_single_tick_through_pipeline!(
             sp.agc_alpha,
             sp.agc_min_scale,
             sp.agc_max_scale,
-            sp.winsorize_threshold,
+            sp.winsorize_delta_threshold,
             sp.min_price,
             sp.max_price,
             sp.max_jump
@@ -237,7 +237,7 @@ function run_pipeline(
                     sp.agc_alpha,
                     sp.agc_min_scale,
                     sp.agc_max_scale,
-                    sp.winsorize_threshold,
+                    sp.winsorize_delta_threshold,
                     sp.min_price,
                     sp.max_price,
                     sp.max_jump

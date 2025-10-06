@@ -14,7 +14,7 @@ All features ALWAYS ENABLED (no enable/disable flags per design spec).
 - `agc_alpha::Float32`: AGC smoothing factor (e.g., 0.0625 = 1/16)
 - `agc_min_scale::Int32`: AGC minimum scale limit
 - `agc_max_scale::Int32`: AGC maximum scale limit
-- `winsorize_threshold::Float32`: Outlier clipping threshold (sigma units)
+- `winsorize_delta_threshold::Int32`: Raw delta clipping threshold (applied before normalization)
 - `min_price::Int32`: Minimum valid price
 - `max_price::Int32`: Maximum valid price
 - `max_jump::Int32`: Maximum allowed price jump
@@ -23,7 +23,7 @@ struct SignalProcessingConfig
     agc_alpha::Float32
     agc_min_scale::Int32
     agc_max_scale::Int32
-    winsorize_threshold::Float32
+    winsorize_delta_threshold::Int32
     min_price::Int32
     max_price::Int32
     max_jump::Int32
@@ -32,12 +32,12 @@ struct SignalProcessingConfig
         agc_alpha::Float32 = Float32(0.125),
         agc_min_scale::Int32 = Int32(4),
         agc_max_scale::Int32 = Int32(50),
-        winsorize_threshold::Float32 = Float32(3.0),
+        winsorize_delta_threshold::Int32 = Int32(10),  # Clips top 0.5% of deltas (data-driven)
         min_price::Int32 = Int32(36600),
         max_price::Int32 = Int32(43300),
         max_jump::Int32 = Int32(50)
     )
-        new(agc_alpha, agc_min_scale, agc_max_scale, winsorize_threshold,
+        new(agc_alpha, agc_min_scale, agc_max_scale, winsorize_delta_threshold,
             min_price, max_price, max_jump)
     end
 end
@@ -174,7 +174,7 @@ tick_file_path = "data/raw/YM 06-25.Last.txt"
 agc_alpha = 0.0625
 agc_min_scale = 4
 agc_max_scale = 50
-winsorize_threshold = 3.0
+winsorize_delta_threshold = 10
 min_price = 39000
 max_price = 44000
 max_jump = 50
@@ -206,7 +206,7 @@ function load_config_from_toml(toml_path::String)::PipelineConfig
         agc_alpha = Float32(get(sp, "agc_alpha", 0.0625)),
         agc_min_scale = Int32(get(sp, "agc_min_scale", 4)),
         agc_max_scale = Int32(get(sp, "agc_max_scale", 50)),
-        winsorize_threshold = Float32(get(sp, "winsorize_threshold", 3.0)),
+        winsorize_delta_threshold = Int32(get(sp, "winsorize_delta_threshold", 10)),
         min_price = Int32(get(sp, "min_price", 39000)),
         max_price = Int32(get(sp, "max_price", 44000)),
         max_jump = Int32(get(sp, "max_jump", 50))
@@ -271,7 +271,7 @@ function save_config_to_toml(config::PipelineConfig, toml_path::String)
             "agc_alpha" => config.signal_processing.agc_alpha,
             "agc_min_scale" => config.signal_processing.agc_min_scale,
             "agc_max_scale" => config.signal_processing.agc_max_scale,
-            "winsorize_threshold" => config.signal_processing.winsorize_threshold,
+            "winsorize_delta_threshold" => config.signal_processing.winsorize_delta_threshold,
             "min_price" => config.signal_processing.min_price,
             "max_price" => config.signal_processing.max_price,
             "max_jump" => config.signal_processing.max_jump
@@ -320,8 +320,8 @@ function validate_config(config::PipelineConfig)::Tuple{Bool, Vector{String}}
     if sp.agc_alpha <= Float32(0.0) || sp.agc_alpha >= Float32(1.0)
         push!(errors, "agc_alpha must be in range (0.0, 1.0)")
     end
-    if sp.winsorize_threshold <= Float32(0.0)
-        push!(errors, "winsorize_threshold must be positive")
+    if sp.winsorize_delta_threshold <= Int32(0)
+        push!(errors, "winsorize_delta_threshold must be positive")
     end
     if sp.min_price >= sp.max_price
         push!(errors, "min_price must be < max_price")

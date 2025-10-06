@@ -87,14 +87,14 @@ function plot_tick_data(jld2_file::String; start_tick::Int = 1, num_ticks::Int =
         mode = "lines"
     )
 
-    trace2 = scatter(
-        x = tick_idx,
-        y = price_delta_float,
-        name = "Price Delta",
-        yaxis = "y2",
-        line = attr(color = "red", width = 1),
-        mode = "lines"
-    )
+    # trace2 = scatter(
+    #     x = tick_idx,
+    #     y = price_delta_float,
+    #     name = "Price Delta",
+    #     yaxis = "y2",
+    #     line = attr(color = "red", width = 1),
+    #     mode = "lines"
+    # )
 
     trace3 = scatter(
         x = tick_idx,
@@ -125,7 +125,7 @@ function plot_tick_data(jld2_file::String; start_tick::Int = 1, num_ticks::Int =
 
     # Create layout with dual y-axes
     layout = Layout(
-        title = "TickDataPipeline Output: Raw Price, Price Delta, AGC & Complex Signals<br><sub>File: $(basename(jld2_file)) | Total ticks: $total_ticks</sub>",
+        title = "TickDataPipeline Output: Raw Price, Bar Normalization & 16-Phase I/Q Signals<br><sub>File: $(basename(jld2_file)) | Total ticks: $total_ticks</sub>",
         xaxis = attr(
             title = "Tick Index",
             showgrid = true,
@@ -142,9 +142,9 @@ function plot_tick_data(jld2_file::String; start_tick::Int = 1, num_ticks::Int =
             gridcolor = "lightgray"
         ),
         yaxis2 = attr(
-            title = "Price Delta / AGC Scale / Complex Signals (6x scaled)<br>AGC: $min_norm - $max_norm (purple) | I/Q: Real +1.0, Imag -1.0",
-            titlefont = attr(color = "red"),
-            tickfont = attr(color = "red"),
+            title = "Bar Normalization / 16-Phase I/Q Signals (6x scaled)<br>Norm: $min_norm - $max_norm (purple) | I/Q: Real +1.0, Imag -1.0",
+            titlefont = attr(color = "purple"),
+            tickfont = attr(color = "purple"),
             overlaying = "y",
             side = "right",
             showgrid = false
@@ -155,8 +155,8 @@ function plot_tick_data(jld2_file::String; start_tick::Int = 1, num_ticks::Int =
         height = 700
     )
 
-    # Create plot
-    p = plot([trace1, trace5, trace2, trace3, trace4], layout)
+    # Create plot (trace2 commented out - price_delta removed)
+    p = plot([trace1, trace5, trace3, trace4], layout)
 
     # Save to HTML with range info in filename
     base_name = replace(jld2_file, ".jld2" => "")

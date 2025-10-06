@@ -1,145 +1,111 @@
-# src/TickHotLoopF32.jl - Ultra-Fast Signal Processing
-# Design Specification v2.4 Implementation
-# ZERO BRANCHING for feature enablement - all features ALWAYS ENABLED
-# Updated: 2025-10-04 - Fixed QUAD-4 rotation with constant tuple
+# TickHotLoopF32.jl - High-Performance Signal Processing
+# All features always enabled - zero branching for optimal performance
 
-# Note: Using parent module's BroadcastMessage and FLAG constants
-# This module is included in TickDataPipeline
+# 16-phase rotation constants (22.5° increments)
+# Provides fine angular resolution without trig calculations
+const COS_22_5 = Float32(0.9238795325112867)   # cos(22.5°)
+const SIN_22_5 = Float32(0.3826834323650898)   # sin(22.5°)
+const COS_67_5 = Float32(0.3826834323650898)   # cos(67.5°)
+const SIN_67_5 = Float32(0.9238795325112867)   # sin(67.5°)
+const SQRT2_OVER_2 = Float32(0.7071067811865476)  # √2/2 for 45°, 135°, etc.
 
-# QUAD-4 phase rotation multipliers (0°, 90°, 180°, 270°)
-const QUAD4 = (ComplexF32(1, 0), ComplexF32(0, 1), ComplexF32(-1, 0), ComplexF32(0, -1))
+# HEXAD-16 phase rotation: 0°, 22.5°, 45°, 67.5°, ..., 337.5°
+const HEXAD16 = (
+    ComplexF32(1.0, 0.0),                        # 0°
+    ComplexF32(COS_22_5, SIN_22_5),              # 22.5°
+    ComplexF32(SQRT2_OVER_2, SQRT2_OVER_2),      # 45°
+    ComplexF32(COS_67_5, SIN_67_5),              # 67.5°
+    ComplexF32(0.0, 1.0),                        # 90°
+    ComplexF32(-COS_67_5, SIN_67_5),             # 112.5°
+    ComplexF32(-SQRT2_OVER_2, SQRT2_OVER_2),     # 135°
+    ComplexF32(-COS_22_5, SIN_22_5),             # 157.5°
+    ComplexF32(-1.0, 0.0),                       # 180°
+    ComplexF32(-COS_22_5, -SIN_22_5),            # 202.5°
+    ComplexF32(-SQRT2_OVER_2, -SQRT2_OVER_2),    # 225°
+    ComplexF32(-COS_67_5, -SIN_67_5),            # 247.5°
+    ComplexF32(0.0, -1.0),                       # 270°
+    ComplexF32(COS_67_5, -SIN_67_5),             # 292.5°
+    ComplexF32(SQRT2_OVER_2, -SQRT2_OVER_2),     # 315°
+    ComplexF32(COS_22_5, -SIN_22_5)              # 337.5°
+)
 
-"""
-TickHotLoopState - Stateful processing for TickHotLoopF32
+# Bar size for statistics tracking
+# 144 ticks = 9 complete 16-phase cycles (perfect alignment)
+const TICKS_PER_BAR = Int32(144)
 
-Tracks EMA values and AGC state across ticks for signal processing.
-All fields are mutable for in-place state updates.
-
-# Fields
-- `last_clean::Union{Int32, Nothing}`: Last accepted clean price
-- `ema_delta::Int32`: EMA of price deltas
-- `ema_delta_dev::Int32`: EMA of |Δ - emaΔ| for winsorization
-- `has_delta_ema::Bool`: Whether EMA has been initialized
-- `ema_abs_delta::Int32`: EMA of absolute delta for AGC
-- `tick_count::Int64`: Total ticks processed
-- `ticks_accepted::Int64`: Ticks accepted (not held)
-"""
+# State container for signal processing across ticks
 mutable struct TickHotLoopState
-    # Price tracking
-    last_clean::Union{Int32, Nothing}
+    last_clean::Union{Int32, Nothing}  # Last valid price
+    ema_delta::Int32                   # EMA of deltas (unused, reserved)
+    ema_delta_dev::Int32              # EMA of delta deviation (unused, reserved)
+    has_delta_ema::Bool               # EMA initialization flag
+    ema_abs_delta::Int32              # AGC: EMA of absolute delta (reserved)
+    tick_count::Int64                 # Total ticks processed
+    ticks_accepted::Int64             # Ticks accepted (not rejected)
 
-    # EMA state for normalization
-    ema_delta::Int32
-    ema_delta_dev::Int32
-    has_delta_ema::Bool
+    # Bar statistics (144 ticks per bar)
+    bar_tick_count::Int32             # Current position in bar (0-143)
+    bar_price_delta_min::Int32        # Min delta in current bar
+    bar_price_delta_max::Int32        # Max delta in current bar
 
-    # AGC state
-    ema_abs_delta::Int32
+    # Rolling statistics across all bars
+    sum_bar_min::Int64                # Sum of all bar minimums
+    sum_bar_max::Int64                # Sum of all bar maximums
+    bar_count::Int64                  # Total bars completed
 
-    # Counters
-    tick_count::Int64
-    ticks_accepted::Int64
+    # Cached normalization (updated at bar boundaries)
+    cached_inv_norm_Q16::Int32        # 1/normalization in Q16 fixed-point
 end
 
-"""
-    create_tickhotloop_state()::TickHotLoopState
-
-Create initial TickHotLoopState with default values.
-
-# Returns
-- `TickHotLoopState` initialized for first tick
-"""
+# Initialize state with default values
 function create_tickhotloop_state()::TickHotLoopState
     return TickHotLoopState(
-        nothing,           # last_clean
-        Int32(0),         # ema_delta
-        Int32(1),         # ema_delta_dev
-        false,            # has_delta_ema
-        Int32(10),        # ema_abs_delta (nominal preload)
-        Int64(0),         # tick_count
-        Int64(0)          # ticks_accepted
+        nothing,      # No previous price
+        Int32(0),     # ema_delta
+        Int32(1),     # ema_delta_dev
+        false,        # EMA not initialized
+        Int32(10),    # AGC preload value (reserved)
+        Int64(0),     # No ticks processed
+        Int64(0),     # No ticks accepted
+
+        # Bar statistics initialization
+        Int32(0),            # bar_tick_count starts at 0
+        typemax(Int32),      # bar_price_delta_min (will track minimum)
+        typemin(Int32),      # bar_price_delta_max (will track maximum)
+
+        # Rolling statistics initialization
+        Int64(0),            # sum_bar_min
+        Int64(0),            # sum_bar_max
+        Int64(0),            # bar_count
+
+        # Preload normalization reciprocal (assume range of 20 initially)
+        Int32(round(Float32(65536) / Float32(20)))  # 1/20 in Q16
     )
 end
 
-"""
-    apply_quad4_rotation(normalized_value::Float32, phase_pos::Int32)::ComplexF32
-
-Apply QUAD-4 phase rotation by multiplying scalar value by complex phasor.
-
-# Arguments
-- `normalized_value::Float32`: Normalized signal value (real scalar)
-- `phase_pos::Int32`: Phase position (0, 1, 2, 3)
-
-# Returns
-- `ComplexF32`: Rotated complex signal = normalized_value × QUAD4[phase]
-  - pos 0 (0°):   value × (1, 0)   → (value, 0)
-  - pos 1 (90°):  value × (0, 1)   → (0, value)
-  - pos 2 (180°): value × (-1, 0)  → (-value, 0)
-  - pos 3 (270°): value × (0, -1)  → (0, -value)
-"""
-@inline function apply_quad4_rotation(normalized_value::Float32, phase_pos::Int32)::ComplexF32
-    phase = (phase_pos & Int32(3)) + Int32(1)  # Bitwise AND for fast modulo-4, convert to 1-based index
-    return normalized_value * QUAD4[phase]
+# Apply HEXAD-16 rotation: scalar × complex phasor → complex output
+# Maps normalized value to one of 16 phases (0° to 337.5° in 22.5° increments)
+# No trig - just table lookup and complex multiply
+@inline function apply_hexad16_rotation(normalized_value::Float32, phase_pos::Int32)::ComplexF32
+    phase = (phase_pos & Int32(15)) + Int32(1)  # Modulo-16, convert to 1-based
+    return normalized_value * HEXAD16[phase]
 end
 
-"""
-    phase_pos_global(tick_idx::Int64)::Int32
-
-Calculate global phase position that cycles through 0, 1, 2, 3.
-
-# Arguments
-- `tick_idx::Int64`: Current tick index (1-based)
-
-# Returns
-- `Int32`: Phase position (0, 1, 2, 3)
-"""
+# Calculate global phase position: cycles 0,1,2,3,...,14,15,0,1,...
+# 144 ticks per bar = 9 complete 16-phase cycles
 function phase_pos_global(tick_idx::Int64)::Int32
-    return Int32((tick_idx - 1) & 3)  # Bitwise AND for fast modulo-4
+    return Int32((tick_idx - 1) & 15)  # Fast modulo-16
 end
 
-"""
-    process_tick_signal!(msg, state, agc_alpha, agc_min_scale, agc_max_scale,
-                        winsorize_threshold, min_price, max_price, max_jump)
-
-Process single tick signal with IN-PLACE BroadcastMessage update.
-
-PERFORMANCE CRITICAL: All features ALWAYS ENABLED (zero branching for enablement).
-
-# Algorithm
-1. Absolute price validation (min_price, max_price)
-2. Initialize on first good tick
-3. Hard jump guard (max_jump)
-4. Update EMA for normalization (alpha = 1/16)
-5. AGC (Automatic Gain Control)
-6. Normalize price delta
-7. Winsorization (outlier clipping)
-8. QUAD-4 rotation
-9. Update BroadcastMessage IN-PLACE
-
-# Arguments
-- `msg::BroadcastMessage`: Message with price_delta already populated (MODIFIED IN-PLACE)
-- `state::TickHotLoopState`: Stateful processing state (MODIFIED IN-PLACE)
-- `agc_alpha::Float32`: AGC alpha (e.g., 0.0625 = 1/16)
-- `agc_min_scale::Int32`: AGC minimum scale (prevents over-amplification)
-- `agc_max_scale::Int32`: AGC maximum scale (prevents under-amplification)
-- `winsorize_threshold::Float32`: Winsorization threshold (e.g., 3.0 sigma)
-- `min_price::Int32`: Minimum valid price
-- `max_price::Int32`: Maximum valid price
-- `max_jump::Int32`: Maximum allowed price jump
-
-# Modifies
-- `msg.complex_signal`: Set to processed signal
-- `msg.normalization`: Set to AGC scale factor
-- `msg.status_flag`: Set to processing flags
-- `state`: All fields updated
-"""
+# Main signal processing function - modifies msg and state in-place
+# Processing chain: validation → jump guard → winsorize → bar stats → normalize → HEXAD-16 → output
 function process_tick_signal!(
     msg::BroadcastMessage,
     state::TickHotLoopState,
     agc_alpha::Float32,
     agc_min_scale::Int32,
     agc_max_scale::Int32,
-    winsorize_threshold::Float32,
+    winsorize_delta_threshold::Int32,
     min_price::Int32,
     max_price::Int32,
     max_jump::Int32
@@ -147,51 +113,54 @@ function process_tick_signal!(
     price_delta = msg.price_delta
     flag = FLAG_OK
 
-    # Absolute price validation (ALWAYS ENABLED)
+    # Step 1: Price validation
     if msg.raw_price < min_price || msg.raw_price > max_price
         if state.last_clean !== nothing
+            # Hold last valid signal
             flag |= FLAG_HOLDLAST
-            # Use zero delta, previous signal
             normalized_ratio = Float32(0.0)
             phase = phase_pos_global(Int64(msg.tick_idx))
-            z = apply_quad4_rotation(normalized_ratio, phase)
-
+            z = apply_hexad16_rotation(normalized_ratio, phase)
             update_broadcast_message!(msg, z, Float32(1.0), flag)
             state.ticks_accepted += Int64(1)
             return
         else
-            # First tick invalid, hold
+            # First tick invalid - output zeros
             update_broadcast_message!(msg, ComplexF32(0, 0), Float32(1.0), FLAG_OK)
             return
         end
     end
 
-    # Initialize on first good tick
+    # Step 2: First tick initialization
     if state.last_clean === nothing
         state.last_clean = msg.raw_price
         normalized_ratio = Float32(0.0)
         phase = phase_pos_global(Int64(msg.tick_idx))
-        z = apply_quad4_rotation(normalized_ratio, phase)
-
+        z = apply_hexad16_rotation(normalized_ratio, phase)
         update_broadcast_message!(msg, z, Float32(1.0), FLAG_OK)
         state.ticks_accepted += Int64(1)
         return
     end
 
-    # Get delta
     delta = price_delta
 
-    # Hard jump guard (ALWAYS ENABLED)
+    # Step 3: Jump guard (clip extreme moves)
     if abs(delta) > max_jump
         delta = delta > Int32(0) ? max_jump : -max_jump
         flag |= FLAG_CLIPPED
     end
 
-    # Update EMA for normalization (ALWAYS ENABLED)
-    abs_delta = abs(delta)
+    # Step 4: Winsorize raw delta BEFORE bar statistics
+    # Data-driven threshold (10) clips top 0.5% of deltas
+    # Prevents outliers from skewing bar min/max statistics
+    if abs(delta) > winsorize_delta_threshold
+        delta = sign(delta) * winsorize_delta_threshold
+        flag |= FLAG_CLIPPED
+    end
 
+    # Step 5: Update EMA statistics (reserved for future use)
+    abs_delta = abs(delta)
     if state.has_delta_ema
-        # Update EMA (alpha = 1/16 = 0.0625)
         state.ema_delta = state.ema_delta + ((delta - state.ema_delta) >> 4)
         dev = abs(delta - state.ema_delta)
         state.ema_delta_dev = state.ema_delta_dev + ((dev - state.ema_delta_dev) >> 4)
@@ -201,43 +170,57 @@ function process_tick_signal!(
         state.has_delta_ema = true
     end
 
-    # AGC (ALWAYS ENABLED)
-    # Update EMA of absolute delta
+    # Step 6: Update AGC (reserved for future use)
     state.ema_abs_delta = state.ema_abs_delta +
                          Int32(round((Float32(abs_delta) - Float32(state.ema_abs_delta)) * agc_alpha))
 
-    # Calculate AGC scale
-    agc_scale = max(state.ema_abs_delta, Int32(1))
-    agc_scale = clamp(agc_scale, agc_min_scale, agc_max_scale)
+    # Step 7: Update bar statistics (track min/max within current bar)
+    # Now uses winsorized delta - outliers already clipped
+    state.bar_tick_count += Int32(1)
+    state.bar_price_delta_min = min(state.bar_price_delta_min, delta)
+    state.bar_price_delta_max = max(state.bar_price_delta_max, delta)
 
-    if agc_scale >= agc_max_scale
-        flag |= FLAG_AGC_LIMIT
+    # Step 8: Check for bar boundary (every 144 ticks)
+    if state.bar_tick_count >= TICKS_PER_BAR
+        # Accumulate bar statistics
+        state.sum_bar_min += Int64(state.bar_price_delta_min)
+        state.sum_bar_max += Int64(state.bar_price_delta_max)
+        state.bar_count += Int64(1)
+
+        # Compute rolling averages
+        avg_min = state.sum_bar_min / state.bar_count
+        avg_max = state.sum_bar_max / state.bar_count
+
+        # Compute normalization range (max - min)
+        normalization = max(avg_max - avg_min, Int64(1))
+
+        # Pre-compute reciprocal in Q16 fixed-point
+        # 65536 = 2^16 for Q16 fixed-point representation
+        state.cached_inv_norm_Q16 = Int32(round(Float32(65536) / Float32(normalization)))
+
+        # Reset bar counters
+        state.bar_tick_count = Int32(0)
+        state.bar_price_delta_min = typemax(Int32)
+        state.bar_price_delta_max = typemin(Int32)
     end
 
-    # Normalize (ALWAYS ENABLED)
-    normalized_ratio = Float32(delta) / Float32(agc_scale)
+    # Step 9: Normalize using Q16 fixed-point (fast integer multiply)
+    normalized_Q16 = delta * state.cached_inv_norm_Q16
+    normalized_ratio = Float32(normalized_Q16) * Float32(1.52587890625e-5)  # 1/(2^16)
 
-    # Winsorization (ALWAYS ENABLED)
-    if abs(normalized_ratio) > winsorize_threshold
-        normalized_ratio = sign(normalized_ratio) * winsorize_threshold
-        flag |= FLAG_CLIPPED
-    end
+    # Normalization factor for recovery
+    # Recovery: complex_signal_real × normalization_factor = price_delta (approximately)
+    # Note: With bar-based normalization, recovery uses bar statistics
+    normalization_factor = Float32(1.0) / (Float32(state.cached_inv_norm_Q16) * Float32(1.52587890625e-5))
 
-    # Scale to ±0.5 range for price/volume symmetry (winsorize_threshold=3.0 → ±0.5)
-    normalized_ratio = normalized_ratio / Float32(6.0)
-
-    # Normalization factor includes both AGC scale and 1/6 adjustment
-    # To recover price_delta: complex_signal_real × normalization_factor = price_delta
-    normalization_factor = Float32(agc_scale) * Float32(6.0)
-
-    # Apply QUAD-4 rotation (ALWAYS ENABLED)
+    # Step 10: Apply HEXAD-16 phase rotation
     phase = phase_pos_global(Int64(msg.tick_idx))
-    z = apply_quad4_rotation(normalized_ratio, phase)
+    z = apply_hexad16_rotation(normalized_ratio, phase)
 
-    # Update message IN-PLACE
+    # Step 11: Update message with processed signal
     update_broadcast_message!(msg, z, normalization_factor, flag)
 
-    # Update state
+    # Update state for next tick
     state.last_clean = msg.raw_price
     state.ticks_accepted += Int64(1)
 end

@@ -85,9 +85,10 @@ function main()
     # Create triple split manager
     split_mgr = create_triple_split_manager()
 
-    # Subscribe ProductionFilterConsumer (MONITORING = non-blocking)
-    # Use large buffer to minimize drops
-    consumer = subscribe_consumer!(split_mgr, "jld2_writer", MONITORING, Int32(65536))
+    # Subscribe ProductionFilterConsumer (PRIORITY = blocking)
+    # Ensures all ticks captured - no drops
+    # Large buffer (256K) provides headroom for any processing latency spikes
+    consumer = subscribe_consumer!(split_mgr, "jld2_writer", PRIORITY, Int32(262144))
 
     # Create data collector
     collector = create_collector()
