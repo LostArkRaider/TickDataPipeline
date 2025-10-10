@@ -129,7 +129,9 @@ function process_single_tick_through_pipeline!(
             sp.winsorize_delta_threshold,
             sp.min_price,
             sp.max_price,
-            sp.max_jump
+            sp.max_jump,
+            sp.encoder_type,
+            sp.cpm_modulation_index
         )
     catch e
         @warn "Signal processing error: $e"
@@ -240,7 +242,9 @@ function run_pipeline(
                     sp.winsorize_delta_threshold,
                     sp.min_price,
                     sp.max_price,
-                    sp.max_jump
+                    sp.max_jump,
+                    sp.encoder_type,
+                    sp.cpm_modulation_index
                 )
             catch e
                 @warn "Signal processing error: $e"

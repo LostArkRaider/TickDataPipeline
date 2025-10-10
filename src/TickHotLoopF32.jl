@@ -29,6 +29,22 @@ const HEXAD16 = (
     ComplexF32(COS_22_5, -SIN_22_5)              # 337.5°
 )
 
+# CPM (Continuous Phase Modulation) encoder constants
+# 1024-entry complex phasor lookup table for CPM encoding
+# Maps phase [0, 2π) to unit-circle complex phasors
+# Used when encoder_type = "cpm" (configured in PipelineConfig)
+const CPM_LUT_1024 = Tuple(
+    ComplexF32(
+        cos(Float32(2π * k / 1024)),
+        sin(Float32(2π * k / 1024))
+    ) for k in 0:1023
+)
+
+# CPM encoder processing constants
+const CPM_Q32_SCALE_H05 = Float32(2^31)  # Phase increment scale for h=0.5
+const CPM_INDEX_SHIFT = Int32(22)         # Bit shift for 10-bit LUT indexing
+const CPM_INDEX_MASK = UInt32(0x3FF)      # 10-bit mask (1023 max index)
+
 # Bar size for statistics tracking
 # 144 ticks = 9 complete 16-phase cycles (perfect alignment)
 const TICKS_PER_BAR = Int32(144)
@@ -55,6 +71,9 @@ mutable struct TickHotLoopState
 
     # Cached normalization (updated at bar boundaries)
     cached_inv_norm_Q16::Int32        # 1/normalization in Q16 fixed-point
+
+    # CPM encoder state (only used when encoder_type = "cpm")
+    phase_accumulator_Q32::Int32      # Accumulated phase in Q32 format [0, 2^32) → [0, 2π)
 end
 
 # Initialize state with default values
@@ -79,7 +98,10 @@ function create_tickhotloop_state()::TickHotLoopState
         Int64(0),            # bar_count
 
         # Preload normalization reciprocal (assume range of 20 initially)
-        Int32(round(Float32(65536) / Float32(20)))  # 1/20 in Q16
+        Int32(round(Float32(65536) / Float32(20))),  # 1/20 in Q16
+
+        # CPM state initialization
+        Int32(0)  # phase_accumulator_Q32 starts at 0 radians
     )
 end
 
@@ -97,8 +119,58 @@ function phase_pos_global(tick_idx::Int64)::Int32
     return Int32((tick_idx - 1) & 15)  # Fast modulo-16
 end
 
+# CPM encoder: Continuous Phase Modulation
+# Converts normalized input to phase increment, accumulates phase, generates I/Q from LUT
+# Phase memory persists across ticks (true CPM with continuous phase)
+#
+# Arguments:
+#   msg: BroadcastMessage to update (modified in-place)
+#   state: TickHotLoopState containing phase accumulator (modified in-place)
+#   normalized_ratio: Normalized price delta [-1, +1] typically
+#   normalization_factor: Recovery factor for denormalization
+#   flag: Status flags (UInt8)
+#   h: Modulation index (0.5 = MSK characteristics, configurable)
+#
+# Operation:
+#   Δθ[n] = 2πh·m[n] where m[n] = normalized_ratio
+#   θ[n] = θ[n-1] + Δθ[n] (accumulated in Q32 fixed-point)
+#   output = exp(j·θ[n]) = cos(θ) + j·sin(θ) (via LUT)
+@inline function process_tick_cpm!(
+    msg::BroadcastMessage,
+    state::TickHotLoopState,
+    normalized_ratio::Float32,
+    normalization_factor::Float32,
+    flag::UInt8,
+    h::Float32
+)
+    # Step 1: Compute phase increment in Q32 fixed-point
+    # Δθ = 2πh × normalized_ratio
+    # In Q32: 2π radians = 2^32 counts, so 1 radian = 2^31/π counts
+    # For efficiency: Δθ_Q32 = normalized_ratio × h × 2^32 = normalized_ratio × h × 2 × 2^31
+    # Simplify: Δθ_Q32 = normalized_ratio × (2h × 2^31)
+    phase_scale = Float32(2.0) * h * CPM_Q32_SCALE_H05
+    # Use unsafe_trunc to handle Float32 values that exceed Int32 range (allows intentional overflow)
+    delta_phase_Q32 = unsafe_trunc(Int32, round(normalized_ratio * phase_scale))
+
+    # Step 2: Accumulate phase (automatic wraparound at ±2^31)
+    # Int32 overflow provides modulo 2π behavior
+    state.phase_accumulator_Q32 += delta_phase_Q32
+
+    # Step 3: Extract 10-bit LUT index from upper bits of phase
+    # Shift right 22 bits to get upper 10 bits, mask to ensure 0-1023 range
+    # Use reinterpret to treat Int32 as UInt32 for bit manipulation (handles negative values)
+    lut_index = Int32((reinterpret(UInt32, state.phase_accumulator_Q32) >> CPM_INDEX_SHIFT) & CPM_INDEX_MASK)
+
+    # Step 4: Lookup complex phasor (Julia 1-based indexing)
+    complex_signal = CPM_LUT_1024[lut_index + 1]
+
+    # Step 5: Update broadcast message with CPM-encoded signal
+    update_broadcast_message!(msg, complex_signal, normalization_factor, flag)
+end
+
 # Main signal processing function - modifies msg and state in-place
-# Processing chain: validation → jump guard → winsorize → bar stats → normalize → HEXAD-16 → output
+# Processing chain: validation → jump guard → winsorize → bar stats → normalize → encoder selection → output
+# Encoder selection: HEXAD-16 (discrete 16-phase) or CPM (continuous phase modulation)
 function process_tick_signal!(
     msg::BroadcastMessage,
     state::TickHotLoopState,
@@ -108,7 +180,9 @@ function process_tick_signal!(
     winsorize_delta_threshold::Int32,
     min_price::Int32,
     max_price::Int32,
-    max_jump::Int32
+    max_jump::Int32,
+    encoder_type::String,
+    cpm_modulation_index::Float32
 )
     price_delta = msg.price_delta
     flag = FLAG_OK
@@ -119,9 +193,13 @@ function process_tick_signal!(
             # Hold last valid signal
             flag |= FLAG_HOLDLAST
             normalized_ratio = Float32(0.0)
-            phase = phase_pos_global(Int64(msg.tick_idx))
-            z = apply_hexad16_rotation(normalized_ratio, phase)
-            update_broadcast_message!(msg, z, Float32(1.0), flag)
+            if encoder_type == "cpm"
+                process_tick_cpm!(msg, state, normalized_ratio, Float32(1.0), flag, cpm_modulation_index)
+            else
+                phase = phase_pos_global(Int64(msg.tick_idx))
+                z = apply_hexad16_rotation(normalized_ratio, phase)
+                update_broadcast_message!(msg, z, Float32(1.0), flag)
+            end
             state.ticks_accepted += Int64(1)
             return
         else
@@ -135,9 +213,13 @@ function process_tick_signal!(
     if state.last_clean === nothing
         state.last_clean = msg.raw_price
         normalized_ratio = Float32(0.0)
-        phase = phase_pos_global(Int64(msg.tick_idx))
-        z = apply_hexad16_rotation(normalized_ratio, phase)
-        update_broadcast_message!(msg, z, Float32(1.0), FLAG_OK)
+        if encoder_type == "cpm"
+            process_tick_cpm!(msg, state, normalized_ratio, Float32(1.0), FLAG_OK, cpm_modulation_index)
+        else
+            phase = phase_pos_global(Int64(msg.tick_idx))
+            z = apply_hexad16_rotation(normalized_ratio, phase)
+            update_broadcast_message!(msg, z, Float32(1.0), FLAG_OK)
+        end
         state.ticks_accepted += Int64(1)
         return
     end
@@ -213,12 +295,16 @@ function process_tick_signal!(
     # Note: With bar-based normalization, recovery uses bar statistics
     normalization_factor = Float32(1.0) / (Float32(state.cached_inv_norm_Q16) * Float32(1.52587890625e-5))
 
-    # Step 10: Apply HEXAD-16 phase rotation
-    phase = phase_pos_global(Int64(msg.tick_idx))
-    z = apply_hexad16_rotation(normalized_ratio, phase)
-
-    # Step 11: Update message with processed signal
-    update_broadcast_message!(msg, z, normalization_factor, flag)
+    # Step 10: Encoder selection - HEXAD-16 or CPM
+    if encoder_type == "cpm"
+        # CPM encoder: Continuous phase modulation
+        process_tick_cpm!(msg, state, normalized_ratio, normalization_factor, flag, cpm_modulation_index)
+    else
+        # HEXAD-16 encoder: Discrete 16-phase rotation (default/backward compatible)
+        phase = phase_pos_global(Int64(msg.tick_idx))
+        z = apply_hexad16_rotation(normalized_ratio, phase)
+        update_broadcast_message!(msg, z, normalization_factor, flag)
+    end
 
     # Update state for next tick
     state.last_clean = msg.raw_price

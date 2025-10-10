@@ -6,43 +6,45 @@ using TickDataPipeline
         state = create_tickhotloop_state()
         @test state.last_clean === nothing
         @test state.has_delta_ema == false
-        @test state.tick_count == Int64(0)
         @test state.ticks_accepted == Int64(0)
         @test state.ema_delta == Int32(0)
         @test state.ema_delta_dev == Int32(1)
         @test state.ema_abs_delta == Int32(10)
     end
 
-    @testset begin #QUAD-4 Rotation
-        # Phase 0: real axis (0°)
-        z = apply_quad4_rotation(Float32(1.0), Int32(0))
-        @test real(z) ≈ Float32(1.0)
-        @test imag(z) ≈ Float32(0.0)
+    # COMMENTED OUT: apply_quad4_rotation is no longer exported
+    # @testset begin #QUAD-4 Rotation
+    #     # Phase 0: real axis (0°)
+    #     z = apply_quad4_rotation(Float32(1.0), Int32(0))
+    #     @test real(z) ≈ Float32(1.0)
+    #     @test imag(z) ≈ Float32(0.0)
 
-        # Phase 1: imaginary axis (90°)
-        z = apply_quad4_rotation(Float32(1.0), Int32(1))
-        @test real(z) ≈ Float32(0.0)
-        @test imag(z) ≈ Float32(1.0)
+    #     # Phase 1: imaginary axis (90°)
+    #     z = apply_quad4_rotation(Float32(1.0), Int32(1))
+    #     @test real(z) ≈ Float32(0.0)
+    #     @test imag(z) ≈ Float32(1.0)
 
-        # Phase 2: negative real axis (180°)
-        z = apply_quad4_rotation(Float32(1.0), Int32(2))
-        @test real(z) ≈ Float32(-1.0)
-        @test imag(z) ≈ Float32(0.0)
+    #     # Phase 2: negative real axis (180°)
+    #     z = apply_quad4_rotation(Float32(1.0), Int32(2))
+    #     @test real(z) ≈ Float32(-1.0)
+    #     @test imag(z) ≈ Float32(0.0)
 
-        # Phase 3: negative imaginary axis (270°)
-        z = apply_quad4_rotation(Float32(1.0), Int32(3))
-        @test real(z) ≈ Float32(0.0)
-        @test imag(z) ≈ Float32(-1.0)
-    end
+    #     # Phase 3: negative imaginary axis (270°)
+    #     z = apply_quad4_rotation(Float32(1.0), Int32(3))
+    #     @test real(z) ≈ Float32(0.0)
+    #     @test imag(z) ≈ Float32(-1.0)
+    # end
 
     @testset begin #Phase Position Global
-        # Cycles through 0, 1, 2, 3
+        # Cycles through 0-15 (HEXAD-16)
         @test phase_pos_global(Int64(1)) == Int32(0)
         @test phase_pos_global(Int64(2)) == Int32(1)
         @test phase_pos_global(Int64(3)) == Int32(2)
         @test phase_pos_global(Int64(4)) == Int32(3)
-        @test phase_pos_global(Int64(5)) == Int32(0)  # Cycles back
-        @test phase_pos_global(Int64(6)) == Int32(1)
+        @test phase_pos_global(Int64(5)) == Int32(4)
+        @test phase_pos_global(Int64(6)) == Int32(5)
+        @test phase_pos_global(Int64(16)) == Int32(15)
+        @test phase_pos_global(Int64(17)) == Int32(0)  # Cycles back after 16
     end
 
     @testset begin #Signal Processing Basic
@@ -52,16 +54,18 @@ using TickDataPipeline
         msg1 = create_broadcast_message(Int32(1), Int64(1), Int32(41971), Int32(0))
         process_tick_signal!(
             msg1, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Second tick has real signal
         msg2 = create_broadcast_message(Int32(2), Int64(2), Int32(41981), Int32(10))
         process_tick_signal!(
             msg2, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Second tick should have non-zero signal
@@ -79,8 +83,9 @@ using TickDataPipeline
 
         process_tick_signal!(
             msg, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # First tick should have zero signal
@@ -98,8 +103,9 @@ using TickDataPipeline
         msg1 = create_broadcast_message(Int32(1), Int64(1), Int32(30000), Int32(0))
         process_tick_signal!(
             msg1, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
         @test state.last_clean === nothing  # Not initialized
 
@@ -107,8 +113,9 @@ using TickDataPipeline
         msg2 = create_broadcast_message(Int32(2), Int64(2), Int32(41971), Int32(0))
         process_tick_signal!(
             msg2, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
         @test state.last_clean == Int32(41971)
 
@@ -116,8 +123,9 @@ using TickDataPipeline
         msg3 = create_broadcast_message(Int32(3), Int64(3), Int32(50000), Int32(0))
         process_tick_signal!(
             msg3, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
         @test (msg3.status_flag & FLAG_HOLDLAST) != UInt8(0)
         @test msg3.complex_signal == ComplexF32(0, 0)  # Zero delta
@@ -130,16 +138,18 @@ using TickDataPipeline
         msg1 = create_broadcast_message(Int32(1), Int64(1), Int32(41971), Int32(0))
         process_tick_signal!(
             msg1, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Second tick with large jump (delta = 100, max_jump = 50)
         msg2 = create_broadcast_message(Int32(2), Int64(2), Int32(42071), Int32(100))
         process_tick_signal!(
             msg2, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Should be clipped
@@ -153,16 +163,18 @@ using TickDataPipeline
         msg1 = create_broadcast_message(Int32(1), Int64(1), Int32(41971), Int32(0))
         process_tick_signal!(
             msg1, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Very small delta
         msg2 = create_broadcast_message(Int32(2), Int64(2), Int32(41972), Int32(1))
         process_tick_signal!(
             msg2, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Normalization should respect min_scale
@@ -176,8 +188,9 @@ using TickDataPipeline
         msg1 = create_broadcast_message(Int32(1), Int64(1), Int32(41971), Int32(0))
         process_tick_signal!(
             msg1, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Process many large deltas to push AGC to max
@@ -185,8 +198,9 @@ using TickDataPipeline
             msg = create_broadcast_message(Int32(i), Int64(i), Int32(41971 + i*40), Int32(40))
             process_tick_signal!(
                 msg, state,
-                Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-                Int32(40000), Int32(43000), Int32(50)
+                Float32(0.0625), Int32(4), Int32(50), Int32(3),
+                Int32(40000), Int32(43000), Int32(50),
+                "hexad16", Float32(0.5)
             )
         end
 
@@ -201,16 +215,18 @@ using TickDataPipeline
         msg1 = create_broadcast_message(Int32(1), Int64(1), Int32(41971), Int32(0))
         process_tick_signal!(
             msg1, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Second tick with moderate delta
         msg2 = create_broadcast_message(Int32(2), Int64(2), Int32(41981), Int32(10))
         process_tick_signal!(
             msg2, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Normalized signal should be clipped if exceeds threshold
@@ -225,8 +241,9 @@ using TickDataPipeline
         msg1 = create_broadcast_message(Int32(1), Int64(1), Int32(41971), Int32(0))
         process_tick_signal!(
             msg1, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Second tick with delta
@@ -239,8 +256,9 @@ using TickDataPipeline
 
         process_tick_signal!(
             msg2, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         # Message should be modified in-place
@@ -255,8 +273,9 @@ using TickDataPipeline
         msg1 = create_broadcast_message(Int32(1), Int64(1), Int32(41971), Int32(0))
         process_tick_signal!(
             msg1, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         @test state.has_delta_ema == false  # Not set on first tick
@@ -265,8 +284,9 @@ using TickDataPipeline
         msg2 = create_broadcast_message(Int32(2), Int64(2), Int32(41981), Int32(10))
         process_tick_signal!(
             msg2, state,
-            Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-            Int32(40000), Int32(43000), Int32(50)
+            Float32(0.0625), Int32(4), Int32(50), Int32(3),
+            Int32(40000), Int32(43000), Int32(50),
+            "hexad16", Float32(0.5)
         )
 
         @test state.has_delta_ema == true
@@ -286,35 +306,36 @@ using TickDataPipeline
             Float32(0.0),     # Zero AGC alpha (still processes)
             Int32(1),         # Minimal scale
             Int32(1),         # Same min/max (still processes)
-            Float32(1000.0),  # Huge threshold (still winsorizes)
+            Int32(1000),      # Huge threshold (still winsorizes)
             Int32(0),         # Wide price range
             Int32(100000),
-            Int32(10000)      # Huge jump limit
+            Int32(10000),     # Huge jump limit
+            "hexad16", Float32(0.5)
         )
 
         # Should still process successfully
         @test state.ticks_accepted == Int64(1)
     end
 
-    @testset begin #QUAD-4 Rotation Sequence
+    @testset begin #HEXAD-16 Rotation Sequence
         state = create_tickhotloop_state()
 
-        # Process 4 ticks to see rotation
+        # Process 16 ticks to see full rotation cycle
         messages = BroadcastMessage[]
 
-        for i in 1:4
+        for i in 1:16
             msg = create_broadcast_message(Int32(i), Int64(i), Int32(41971), Int32(0))
             process_tick_signal!(
                 msg, state,
-                Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-                Int32(40000), Int32(43000), Int32(50)
+                Float32(0.0625), Int32(4), Int32(50), Int32(3),
+                Int32(40000), Int32(43000), Int32(50),
+                "hexad16", Float32(0.5)
             )
             push!(messages, msg)
         end
 
-        # Verify phase rotation (though signal is zero for first tick)
-        # At least verify state advanced
-        @test state.tick_count == Int64(4)
+        # Verify all ticks processed
+        @test state.ticks_accepted == Int64(16)
     end
 
     @testset begin #Multiple Ticks Processing
@@ -325,12 +346,12 @@ using TickDataPipeline
             msg = create_broadcast_message(Int32(i), Int64(i), Int32(41971 + i), Int32(i > 1 ? 1 : 0))
             process_tick_signal!(
                 msg, state,
-                Float32(0.0625), Int32(4), Int32(50), Float32(3.0),
-                Int32(40000), Int32(43000), Int32(50)
+                Float32(0.0625), Int32(4), Int32(50), Int32(3),
+                Int32(40000), Int32(43000), Int32(50),
+                "hexad16", Float32(0.5)
             )
         end
 
-        @test state.tick_count == Int64(10)
         @test state.ticks_accepted == Int64(10)
         @test state.last_clean == Int32(41981)
     end

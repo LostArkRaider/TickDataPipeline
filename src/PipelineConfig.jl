@@ -18,6 +18,9 @@ All features ALWAYS ENABLED (no enable/disable flags per design spec).
 - `min_price::Int32`: Minimum valid price
 - `max_price::Int32`: Maximum valid price
 - `max_jump::Int32`: Maximum allowed price jump
+- `encoder_type::String`: Encoder selection ("hexad16" or "cpm")
+- `cpm_modulation_index::Float32`: CPM modulation index h (0.5 = MSK, only used when encoder_type = "cpm")
+- `cpm_lut_size::Int32`: CPM LUT size (must be 1024, only used when encoder_type = "cpm")
 """
 struct SignalProcessingConfig
     agc_alpha::Float32
@@ -27,6 +30,9 @@ struct SignalProcessingConfig
     min_price::Int32
     max_price::Int32
     max_jump::Int32
+    encoder_type::String
+    cpm_modulation_index::Float32
+    cpm_lut_size::Int32
 
     function SignalProcessingConfig(;
         agc_alpha::Float32 = Float32(0.125),
@@ -35,10 +41,13 @@ struct SignalProcessingConfig
         winsorize_delta_threshold::Int32 = Int32(10),  # Clips top 0.5% of deltas (data-driven)
         min_price::Int32 = Int32(36600),
         max_price::Int32 = Int32(43300),
-        max_jump::Int32 = Int32(50)
+        max_jump::Int32 = Int32(50),
+        encoder_type::String = "cpm",  # Default to CPM encoder (per user requirement)
+        cpm_modulation_index::Float32 = Float32(0.5),  # h=0.5 (MSK characteristics)
+        cpm_lut_size::Int32 = Int32(1024)  # 1024-entry LUT (only size currently supported)
     )
         new(agc_alpha, agc_min_scale, agc_max_scale, winsorize_delta_threshold,
-            min_price, max_price, max_jump)
+            min_price, max_price, max_jump, encoder_type, cpm_modulation_index, cpm_lut_size)
     end
 end
 
@@ -209,7 +218,10 @@ function load_config_from_toml(toml_path::String)::PipelineConfig
         winsorize_delta_threshold = Int32(get(sp, "winsorize_delta_threshold", 10)),
         min_price = Int32(get(sp, "min_price", 39000)),
         max_price = Int32(get(sp, "max_price", 44000)),
-        max_jump = Int32(get(sp, "max_jump", 50))
+        max_jump = Int32(get(sp, "max_jump", 50)),
+        encoder_type = String(get(sp, "encoder_type", "cpm")),
+        cpm_modulation_index = Float32(get(sp, "cpm_modulation_index", 0.5)),
+        cpm_lut_size = Int32(get(sp, "cpm_lut_size", 1024))
     )
 
     # Parse flow control section
@@ -274,7 +286,10 @@ function save_config_to_toml(config::PipelineConfig, toml_path::String)
             "winsorize_delta_threshold" => config.signal_processing.winsorize_delta_threshold,
             "min_price" => config.signal_processing.min_price,
             "max_price" => config.signal_processing.max_price,
-            "max_jump" => config.signal_processing.max_jump
+            "max_jump" => config.signal_processing.max_jump,
+            "encoder_type" => config.signal_processing.encoder_type,
+            "cpm_modulation_index" => config.signal_processing.cpm_modulation_index,
+            "cpm_lut_size" => config.signal_processing.cpm_lut_size
         ),
         "flow_control" => Dict{String,Any}(
             "delay_ms" => config.flow_control.delay_ms
@@ -328,6 +343,19 @@ function validate_config(config::PipelineConfig)::Tuple{Bool, Vector{String}}
     end
     if sp.max_jump <= Int32(0)
         push!(errors, "max_jump must be positive")
+    end
+
+    # Validate encoder configuration
+    if sp.encoder_type != "hexad16" && sp.encoder_type != "cpm"
+        push!(errors, "encoder_type must be either \"hexad16\" or \"cpm\"")
+    end
+    if sp.encoder_type == "cpm"
+        if sp.cpm_modulation_index <= Float32(0.0) || sp.cpm_modulation_index > Float32(1.0)
+            push!(errors, "cpm_modulation_index must be in range (0.0, 1.0]")
+        end
+        if sp.cpm_lut_size != Int32(1024)
+            push!(errors, "cpm_lut_size must be 1024 (only size currently supported)")
+        end
     end
 
     # Validate flow control

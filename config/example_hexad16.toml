@@ -1,0 +1,39 @@
+# TickDataPipeline Configuration - HEXAD16 Encoder Example
+# This configuration uses the HEXAD16 (16-phase discrete) encoder
+# for backward compatibility
+
+pipeline_name = "hexad16_example"
+description = "Example configuration with HEXAD16 encoder (backward compatible)"
+version = "1.0"
+tick_file_path = "data/raw/YM 06-25.Last.txt"
+
+[signal_processing]
+# Encoder selection: "cpm" (Continuous Phase Modulation) or "hexad16" (16-phase discrete)
+encoder_type = "hexad16"
+
+# CPM parameters (ignored when encoder_type = "hexad16")
+cpm_modulation_index = 0.5
+cpm_lut_size = 1024
+
+# AGC parameters
+agc_alpha = 0.125           # AGC smoothing factor (1/8)
+agc_min_scale = 4           # Minimum AGC scale
+agc_max_scale = 50          # Maximum AGC scale
+
+# Winsorization and validation
+winsorize_delta_threshold = 10  # Raw delta clipping (clips top 0.5% of deltas)
+min_price = 36600               # Minimum valid price
+max_price = 43300               # Maximum valid price
+max_jump = 50                   # Maximum allowed price jump
+
+[flow_control]
+delay_ms = 0.0  # No delay (full speed processing)
+
+[channels]
+priority_buffer_size = 4096    # Buffer size for priority consumer
+standard_buffer_size = 2048    # Buffer size for standard consumers
+
+[performance]
+target_latency_us = 500        # Target processing latency (microseconds)
+max_latency_us = 1000          # Maximum acceptable latency (microseconds)
+target_throughput_tps = 10000.0  # Target throughput (ticks per second)
