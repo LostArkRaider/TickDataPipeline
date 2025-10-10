@@ -25,4 +25,4 @@ Now when you hover over the plot, the x-axis will show the actual tick index as 
   - Zero tick delay (line 12)
   - Process ALL ticks from the file (line 99)
 
- julia --project=. scripts/plot_jld2_data.jl data/jld2/processed_ticks_20251005_102215.jld2 1 0
+ julia --project=. scripts/plot_jld2_data.jl data/jld2/processed_ticks_20251005_212413.jld2 2214980 10000
