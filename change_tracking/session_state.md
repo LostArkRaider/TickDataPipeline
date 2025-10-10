@@ -1,16 +1,61 @@
 # Session State - TickDataPipeline
 
-**Last Updated:** 2025-10-05 Session 20251005_1950 - COMPLETE
+**Last Updated:** 2025-10-09 Session 20251009 - Git Cleanup COMPLETE
 
 ---
 
 ## 🔥 Active Issues
 
-None - All implementations complete and ready for production testing
+None - All systems ready for production testing
+
+**New Feature Available:** CPM Encoder design complete, ready for implementation
 
 ---
 
 ## ✅ Recent Fixes
+
+### Session 20251009_0900 - CPM Encoder Design COMPLETE
+
+1. **CPM Encoder Design Specification** ✓
+   - Created comprehensive 11-section design document (docs/design/CPM_Encoder_Design_v1.0.md)
+   - Modulation index h = 0.5 (MSK characteristics)
+   - Continuous modulation mapping (proportional to price_delta)
+   - Int32 Q32 fixed-point phase accumulator (zero drift, exact wraparound)
+   - 1024-entry ComplexF32 LUT (10-bit precision, 8KB memory, 0.35° resolution)
+   - Performance: ~25ns per tick (within 10μs budget, 400× headroom)
+   - SNR improvement: ~3-5 dB over hexad16 (continuous phase advantage)
+   - Backward compatible: Configuration-selectable via TOML (default: hexad16)
+
+2. **Architecture Decisions** ✓
+   - Q32 fixed-point representation: [0, 2^32) ↔ [0, 2π) radians
+   - Phase increment: Δθ_Q32 = Int32(round(normalized_ratio × 2^31))
+   - Natural wraparound at 2π (Int32 overflow)
+   - Upper 10 bits index LUT: (θ_Q32 >> 22) & 0x3FF
+   - Operation count: ~11-16 CPU cycles (vs hexad16's ~10 cycles)
+
+3. **Integration Strategy** ✓
+   - New file: src/CPMEncoder.jl (LUT, state, processing function)
+   - Extend TickHotLoopState with CPMEncoderState field
+   - Modify process_tick_signal! with encoder selection branch
+   - Add encoder_type to PipelineConfig.jl (TOML: "hexad16" | "cpm")
+   - Maintains BroadcastMessage interface compatibility
+
+4. **SSB Analysis** ✓
+   - Conclusion: SSB filtering NOT required
+   - Complex baseband signal (I+jQ) inherently single-sideband
+   - No real-valued transmission (stays in complex domain)
+   - Spectral efficiency comparable to hexad16
+
+### Session 20251009 - Git Repository Cleanup
+
+1. **Removed Large HTML Files from Git History** ✓
+   - Total of 6 HTML plot files removed (~1.84 GB)
+   - First cleanup: 5 files from 20251005 (361MB, 360MB, 460MB, 152MB, 484MB)
+   - Second cleanup: 1 file from 20251004 (57.91 MB)
+   - Used git-filter-repo to rewrite git history (twice)
+   - Updated .gitignore to prevent future HTML commits (added *.html)
+   - Successfully force pushed to GitHub - NO warnings or errors
+   - Repository now fully compliant with GitHub size limits
 
 ### Session 20251005_1950 - Bar-Based Normalization + Winsorization + 16-Phase
 
@@ -80,6 +125,28 @@ None - All implementations complete and ready for production testing
 
 ## 📂 Hot Files
 
+### Created Session 20251009_0900
+
+- `docs/design/CPM_Encoder_Design_v1.0.md` (NEW)
+  - Complete CPM encoder design specification
+  - 11 sections + 3 appendices
+  - Modulation theory, architecture, implementation, performance analysis
+  - Configuration schema, integration strategy, testing plan
+  - Ready for implementation phase
+
+- `change_tracking/sessions/session_20251009_0900_cpm_design.md` (NEW)
+  - Session log documenting design process
+  - 7 activities completed (requirements → implementation guide)
+  - All design decisions resolved and documented
+
+- `docs/todo/CPM_Implementation_Guide.md` (NEW)
+  - Comprehensive 4-phase implementation guide
+  - Session-sized chunks (1-3 hours each)
+  - Complete test specifications with T-36 compliance
+  - File-by-file modification instructions
+  - Validation criteria and success metrics
+  - Total scope: 2 files modified, 8 files created
+
 ### Modified Session 20251005_1950
 
 - `src/TickHotLoopF32.jl`
@@ -146,7 +213,17 @@ None - All implementations complete and ready for production testing
 
 ## 🎯 Next Actions
 
-1. **Production Testing with Full Dataset** (PRIORITY)
+1. **CPM Encoder Implementation** (NEW - OPTIONAL FEATURE)
+   - Implement src/CPMEncoder.jl module per design spec
+   - Extend TickHotLoopF32.jl with encoder selection logic
+   - Update PipelineConfig.jl with CPM parameters
+   - Create unit tests (test_cpm_encoder.jl)
+   - Create integration tests (test_cpm_integration.jl)
+   - Benchmark performance vs hexad16 baseline
+   - Document configuration in user guide
+   - Deploy as experimental opt-in feature
+
+2. **Production Testing with Full Dataset** (PRIORITY - HEXAD16 BASELINE)
    - Run `stream_ticks_to_jld2.jl` with all 5.8M ticks
    - Verify bar-based normalization converges correctly
    - Observe normalization factor stability across bars

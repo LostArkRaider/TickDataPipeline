@@ -9,6 +9,7 @@ Manifest.toml
 *.jld2
 *.csv
 *.xlsx
+*.html
 
 # OS-specific
 .DS_Store
