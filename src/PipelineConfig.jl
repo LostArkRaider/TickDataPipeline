@@ -18,9 +18,11 @@ All features ALWAYS ENABLED (no enable/disable flags per design spec).
 - `min_price::Int32`: Minimum valid price
 - `max_price::Int32`: Maximum valid price
 - `max_jump::Int32`: Maximum allowed price jump
-- `encoder_type::String`: Encoder selection ("hexad16" or "cpm")
+- `encoder_type::String`: Encoder selection ("hexad16", "cpm", or "amc")
 - `cpm_modulation_index::Float32`: CPM modulation index h (0.5 = MSK, only used when encoder_type = "cpm")
 - `cpm_lut_size::Int32`: CPM LUT size (must be 1024, only used when encoder_type = "cpm")
+- `amc_carrier_period::Float32`: AMC carrier period in ticks (default: 16.0, only used when encoder_type = "amc")
+- `amc_lut_size::Int32`: AMC LUT size (must be 1024, shares CPM_LUT_1024, only used when encoder_type = "amc")
 """
 struct SignalProcessingConfig
     agc_alpha::Float32
@@ -33,6 +35,8 @@ struct SignalProcessingConfig
     encoder_type::String
     cpm_modulation_index::Float32
     cpm_lut_size::Int32
+    amc_carrier_period::Float32
+    amc_lut_size::Int32
 
     function SignalProcessingConfig(;
         agc_alpha::Float32 = Float32(0.125),
@@ -42,12 +46,15 @@ struct SignalProcessingConfig
         min_price::Int32 = Int32(36600),
         max_price::Int32 = Int32(43300),
         max_jump::Int32 = Int32(50),
-        encoder_type::String = "cpm",  # Default to CPM encoder (per user requirement)
+        encoder_type::String = "amc",  # Default to AMC encoder (harmonic elimination for filter banks)
         cpm_modulation_index::Float32 = Float32(0.5),  # h=0.5 (MSK characteristics)
-        cpm_lut_size::Int32 = Int32(1024)  # 1024-entry LUT (only size currently supported)
+        cpm_lut_size::Int32 = Int32(1024),  # 1024-entry LUT (only size currently supported)
+        amc_carrier_period::Float32 = Float32(16.0),  # AMC carrier period (16 ticks, matches HEXAD16)
+        amc_lut_size::Int32 = Int32(1024)  # AMC LUT size (shares CPM_LUT_1024)
     )
         new(agc_alpha, agc_min_scale, agc_max_scale, winsorize_delta_threshold,
-            min_price, max_price, max_jump, encoder_type, cpm_modulation_index, cpm_lut_size)
+            min_price, max_price, max_jump, encoder_type, cpm_modulation_index, cpm_lut_size,
+            amc_carrier_period, amc_lut_size)
     end
 end
 
@@ -221,7 +228,9 @@ function load_config_from_toml(toml_path::String)::PipelineConfig
         max_jump = Int32(get(sp, "max_jump", 50)),
         encoder_type = String(get(sp, "encoder_type", "cpm")),
         cpm_modulation_index = Float32(get(sp, "cpm_modulation_index", 0.5)),
-        cpm_lut_size = Int32(get(sp, "cpm_lut_size", 1024))
+        cpm_lut_size = Int32(get(sp, "cpm_lut_size", 1024)),
+        amc_carrier_period = Float32(get(sp, "amc_carrier_period", 16.0)),
+        amc_lut_size = Int32(get(sp, "amc_lut_size", 1024))
     )
 
     # Parse flow control section
@@ -289,7 +298,9 @@ function save_config_to_toml(config::PipelineConfig, toml_path::String)
             "max_jump" => config.signal_processing.max_jump,
             "encoder_type" => config.signal_processing.encoder_type,
             "cpm_modulation_index" => config.signal_processing.cpm_modulation_index,
-            "cpm_lut_size" => config.signal_processing.cpm_lut_size
+            "cpm_lut_size" => config.signal_processing.cpm_lut_size,
+            "amc_carrier_period" => config.signal_processing.amc_carrier_period,
+            "amc_lut_size" => config.signal_processing.amc_lut_size
         ),
         "flow_control" => Dict{String,Any}(
             "delay_ms" => config.flow_control.delay_ms
@@ -346,8 +357,8 @@ function validate_config(config::PipelineConfig)::Tuple{Bool, Vector{String}}
     end
 
     # Validate encoder configuration
-    if sp.encoder_type != "hexad16" && sp.encoder_type != "cpm"
-        push!(errors, "encoder_type must be either \"hexad16\" or \"cpm\"")
+    if sp.encoder_type != "hexad16" && sp.encoder_type != "cpm" && sp.encoder_type != "amc"
+        push!(errors, "encoder_type must be either \"hexad16\", \"cpm\", or \"amc\"")
     end
     if sp.encoder_type == "cpm"
         if sp.cpm_modulation_index <= Float32(0.0) || sp.cpm_modulation_index > Float32(1.0)
@@ -355,6 +366,14 @@ function validate_config(config::PipelineConfig)::Tuple{Bool, Vector{String}}
         end
         if sp.cpm_lut_size != Int32(1024)
             push!(errors, "cpm_lut_size must be 1024 (only size currently supported)")
+        end
+    end
+    if sp.encoder_type == "amc"
+        if sp.amc_carrier_period <= Float32(0.0)
+            push!(errors, "amc_carrier_period must be positive")
+        end
+        if sp.amc_lut_size != Int32(1024)
+            push!(errors, "amc_lut_size must be 1024 (only size currently supported)")
         end
     end
 

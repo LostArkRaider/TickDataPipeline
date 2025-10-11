@@ -74,6 +74,9 @@ mutable struct TickHotLoopState
 
     # CPM encoder state (only used when encoder_type = "cpm")
     phase_accumulator_Q32::Int32      # Accumulated phase in Q32 format [0, 2^32) → [0, 2π)
+
+    # AMC encoder state (only used when encoder_type = "amc")
+    amc_carrier_increment_Q32::Int32  # Constant phase increment per tick for AMC carrier
 end
 
 # Initialize state with default values
@@ -97,11 +100,16 @@ function create_tickhotloop_state()::TickHotLoopState
         Int64(0),            # sum_bar_max
         Int64(0),            # bar_count
 
-        # Preload normalization reciprocal (assume range of 20 initially)
-        Int32(round(Float32(65536) / Float32(20))),  # 1/20 in Q16
+        # Preload normalization reciprocal (data-driven: mean normalization = 8.67)
+        Int32(round(Float32(65536) / Float32(8.67))),  # 1/8.67 in Q16
 
         # CPM state initialization
-        Int32(0)  # phase_accumulator_Q32 starts at 0 radians
+        Int32(0),  # phase_accumulator_Q32 starts at 0 radians
+
+        # AMC state initialization
+        # Default carrier period = 16 ticks (matches HEXAD16 compatibility)
+        # Carrier increment = 2^32 / 16 = 268,435,456 (π/8 radians per tick)
+        Int32(268435456)  # amc_carrier_increment_Q32
     )
 end
 
@@ -168,9 +176,56 @@ end
     update_broadcast_message!(msg, complex_signal, normalization_factor, flag)
 end
 
+# AMC encoder: Amplitude-Modulated Continuous Carrier
+# Encodes price delta as amplitude modulation on a constant-frequency carrier
+# Eliminates HEXAD16 harmonics while preserving amplitude-based filter compatibility
+#
+# Arguments:
+#   msg: BroadcastMessage to update (modified in-place)
+#   state: TickHotLoopState containing carrier phase and increment (modified in-place)
+#   normalized_ratio: Normalized price delta [-1, +1] typically (amplitude)
+#   normalization_factor: Recovery factor for denormalization
+#   flag: Status flags (UInt8)
+#
+# Operation:
+#   θ[n] = θ[n-1] + ω_carrier (constant phase increment)
+#   A[n] = normalized_ratio (amplitude from price delta)
+#   output = A[n] × exp(j·θ[n]) = A[n] × (cos(θ) + j·sin(θ)) (via LUT)
+#
+# Key difference from CPM: Phase increment is CONSTANT (not modulated by price delta)
+# This creates continuous carrier with amplitude modulation (AM), not frequency modulation (FM)
+@inline function process_tick_amc!(
+    msg::BroadcastMessage,
+    state::TickHotLoopState,
+    normalized_ratio::Float32,
+    normalization_factor::Float32,
+    flag::UInt8
+)
+    # Step 1: Advance carrier phase by constant increment
+    # This creates smooth continuous rotation at fixed frequency
+    # Unlike CPM, this increment does NOT vary with price_delta
+    state.phase_accumulator_Q32 += state.amc_carrier_increment_Q32
+
+    # Step 2: Extract 10-bit LUT index from upper bits of phase
+    # Same indexing method as CPM (shares LUT)
+    lut_index = Int32((reinterpret(UInt32, state.phase_accumulator_Q32) >> CPM_INDEX_SHIFT) & CPM_INDEX_MASK)
+
+    # Step 3: Lookup carrier phasor (unit magnitude complex exponential)
+    # Reuses CPM_LUT_1024 (no additional memory cost)
+    carrier_phasor = CPM_LUT_1024[lut_index + 1]
+
+    # Step 4: Amplitude modulation
+    # Multiply carrier by amplitude - this is where price_delta information is encoded
+    # Unlike CPM (constant |z|=1.0), AMC has variable envelope |z| = |normalized_ratio|
+    complex_signal = normalized_ratio * carrier_phasor
+
+    # Step 5: Update broadcast message with AMC-encoded signal
+    update_broadcast_message!(msg, complex_signal, normalization_factor, flag)
+end
+
 # Main signal processing function - modifies msg and state in-place
 # Processing chain: validation → jump guard → winsorize → bar stats → normalize → encoder selection → output
-# Encoder selection: HEXAD-16 (discrete 16-phase) or CPM (continuous phase modulation)
+# Encoder selection: HEXAD-16 (discrete 16-phase), CPM (frequency modulation), or AMC (amplitude modulation)
 function process_tick_signal!(
     msg::BroadcastMessage,
     state::TickHotLoopState,
@@ -193,7 +248,9 @@ function process_tick_signal!(
             # Hold last valid signal
             flag |= FLAG_HOLDLAST
             normalized_ratio = Float32(0.0)
-            if encoder_type == "cpm"
+            if encoder_type == "amc"
+                process_tick_amc!(msg, state, normalized_ratio, Float32(1.0), flag)
+            elseif encoder_type == "cpm"
                 process_tick_cpm!(msg, state, normalized_ratio, Float32(1.0), flag, cpm_modulation_index)
             else
                 phase = phase_pos_global(Int64(msg.tick_idx))
@@ -213,7 +270,9 @@ function process_tick_signal!(
     if state.last_clean === nothing
         state.last_clean = msg.raw_price
         normalized_ratio = Float32(0.0)
-        if encoder_type == "cpm"
+        if encoder_type == "amc"
+            process_tick_amc!(msg, state, normalized_ratio, Float32(1.0), FLAG_OK)
+        elseif encoder_type == "cpm"
             process_tick_cpm!(msg, state, normalized_ratio, Float32(1.0), FLAG_OK, cpm_modulation_index)
         else
             phase = phase_pos_global(Int64(msg.tick_idx))
@@ -295,9 +354,12 @@ function process_tick_signal!(
     # Note: With bar-based normalization, recovery uses bar statistics
     normalization_factor = Float32(1.0) / (Float32(state.cached_inv_norm_Q16) * Float32(1.52587890625e-5))
 
-    # Step 10: Encoder selection - HEXAD-16 or CPM
-    if encoder_type == "cpm"
-        # CPM encoder: Continuous phase modulation
+    # Step 10: Encoder selection - HEXAD-16, CPM, or AMC
+    if encoder_type == "amc"
+        # AMC encoder: Amplitude-modulated continuous carrier (harmonic elimination)
+        process_tick_amc!(msg, state, normalized_ratio, normalization_factor, flag)
+    elseif encoder_type == "cpm"
+        # CPM encoder: Continuous phase modulation (frequency modulation)
         process_tick_cpm!(msg, state, normalized_ratio, normalization_factor, flag, cpm_modulation_index)
     else
         # HEXAD-16 encoder: Discrete 16-phase rotation (default/backward compatible)

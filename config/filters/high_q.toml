@@ -1,0 +1,57 @@
+[io]
+snapshot_max_count = 100
+output_file = "data/YM_06-25_fibonacci_filtered.jld2"
+parallel_processing = false
+validate_inputs = true
+snapshot_cleanup_interval_hours = 1
+save_intermediate = false
+test_data_path = "test_data"
+snapshot_compression = true
+backup_on_overwrite = false
+input_file = ""
+snapshot_max_age_hours = 24
+error_on_missing_file = true
+max_memory_gb = 12.0
+compress_output = true
+progress_interval = 1000
+log_progress = true
+snapshot_base_dir = "data/snapshots"
+
+[ga_initialization]
+default_phase_error_history_length = 20
+default_batch_size = 1000
+default_enable_clamping = false
+default_volume_scaling = 1.0
+default_lock_threshold = 0.699999988079071
+default_complex_weight_real = 1.0
+default_clamping_threshold = 9.999999974752427e-7
+default_complex_weight_imag = 0.0
+default_phase_detector_gain = 0.10000000149011612
+default_q_factor = 4.0
+default_loop_bandwidth = 0.009999999776482582
+default_ring_decay = 0.996999979019165
+default_max_frequency_deviation = 0.20000000298023224
+
+[metadata]
+name = "high_q"
+config_type = "standard"
+created = "2025-10-10T13:02:15.844"
+description = "High Q factor for sharp frequency response"
+version = "2.1"
+
+[pll]
+max_phase_detector_gain = 1.0
+enabled = false
+max_loop_bandwidth = 0.10000000149011612
+min_lock_threshold = 0.0
+max_ring_decay = 1.0
+
+[processing]
+include_price_levels = true
+include_volatility = true
+sma_window = 20
+fibonacci_periods = [1, 2, 3, 5, 8, 13, 21, 34]
+include_diagnostics = true
+batch_size = 1000
+q_factor = 2.0
+include_momentum = true

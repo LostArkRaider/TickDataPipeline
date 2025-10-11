@@ -27,7 +27,8 @@ export TickHotLoopState, create_tickhotloop_state
 export process_tick_signal!
 export apply_quad4_rotation, phase_pos_global
 export process_tick_cpm!  # CPM encoder function
-export CPM_LUT_1024  # CPM lookup table (for testing/validation)
+export process_tick_amc!  # AMC encoder function (shares CPM_LUT_1024)
+export CPM_LUT_1024  # CPM/AMC lookup table (shared by both encoders)
 
 # Channel broadcasting (Session 4)
 include("TripleSplitSystem.jl")
