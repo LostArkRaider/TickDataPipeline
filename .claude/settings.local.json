@@ -23,7 +23,8 @@
       "Bash(dir:*)",
       "Bash(mkdir:*)",
       "Bash(taskkill:*)",
-      "Read(//c/**)"
+      "Read(//c/**)",
+      "Bash(move pipeline_phase_corrected_capture.jl pipeline_phase_corrected_capture_hexad16.jl)"
     ],
     "deny": [],
     "ask": []

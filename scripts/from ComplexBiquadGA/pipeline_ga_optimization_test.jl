@@ -186,8 +186,10 @@ end
 """
 Capture filter bank input and output data from BroadcastMessage
 BroadcastMessage is the single source of truth for raw_price and input signal
+Captures both raw and compensated outputs when group delay compensation is enabled
 """
-function capture_filter_data!(filter_inputs, filter_outputs, tick_timestamps, raw_prices, tick_indices,
+function capture_filter_data!(filter_inputs, filter_outputs, filter_compensated_outputs,
+                             tick_timestamps, raw_prices, tick_indices,
                              last_message_ref, actual_filter_bank, elapsed_time, tick_count)
     try
         # Get the last BroadcastMessage from the reference (single source of truth)
@@ -222,17 +224,41 @@ function capture_filter_data!(filter_inputs, filter_outputs, tick_timestamps, ra
             current_outputs = ComplexBiquadGA.ProductionFilterBank.get_band_outputs(actual_filter_bank)
             push!(filter_outputs, current_outputs)
 
+            # Get compensated outputs if group delay compensation is enabled
+            # Check first filter to see if compensation is enabled
+            compensation_enabled = false
+            if hasfield(typeof(actual_filter_bank), :tick_filters) && length(actual_filter_bank.tick_filters) > 0
+                first_filter = actual_filter_bank.tick_filters[1].base_filter
+                if hasfield(typeof(first_filter), :apply_delay_compensation)
+                    compensation_enabled = first_filter.apply_delay_compensation
+                end
+            end
+
+            if compensation_enabled
+                current_compensated = ComplexBiquadGA.ProductionFilterBank.get_compensated_band_outputs(actual_filter_bank)
+                push!(filter_compensated_outputs, current_compensated)
+            else
+                push!(filter_compensated_outputs, ComplexF32[])  # Empty array when disabled
+            end
+
             # DEBUG: Show filter outputs for first 10 ticks
             if tick_count <= 10
                 println("   filter_outputs ($(length(current_outputs)) filters):")
                 for (idx, output) in enumerate(current_outputs)
                     println("      Filter $idx: $output")
                 end
+                if compensation_enabled && !isempty(filter_compensated_outputs[end])
+                    println("   compensated_outputs ($(length(filter_compensated_outputs[end])) filters):")
+                    for (idx, output) in enumerate(filter_compensated_outputs[end])
+                        println("      Filter $idx: $output")
+                    end
+                end
             end
         else
             # If no message yet, push empty vectors to maintain array consistency
             push!(filter_inputs, ComplexF32(0.0, 0.0))
             push!(filter_outputs, ComplexF32[])
+            push!(filter_compensated_outputs, ComplexF32[])
             push!(raw_prices, Int32(0))
             push!(tick_indices, Int64(0))
             push!(tick_timestamps, "")
@@ -243,6 +269,7 @@ function capture_filter_data!(filter_inputs, filter_outputs, tick_timestamps, ra
         # Push default values to maintain array consistency
         push!(filter_inputs, ComplexF32(0.0, 0.0))
         push!(filter_outputs, ComplexF32[])
+        push!(filter_compensated_outputs, ComplexF32[])
         push!(raw_prices, Int32(0))
         push!(tick_indices, Int64(0))
         push!(tick_timestamps, "")
@@ -251,14 +278,26 @@ end
 
 """
 Save pipeline filter bank input/output data to JLD2 file
+Includes both raw outputs and group delay compensated outputs when enabled
 """
-function save_pipeline_filter_data(filter_inputs, filter_outputs, tick_timestamps, raw_prices, tick_indices,
+function save_pipeline_filter_data(filter_inputs, filter_outputs, filter_compensated_outputs,
+                                  tick_timestamps, raw_prices, tick_indices,
                                   pipeline_filter_bank, pipeline_ga_stats, tick_count, timestamp)
     try
+        # Check if group delay compensation was enabled
+        compensation_enabled = false
+        if hasfield(typeof(pipeline_filter_bank), :tick_filters) && length(pipeline_filter_bank.tick_filters) > 0
+            first_filter = pipeline_filter_bank.tick_filters[1].base_filter
+            if hasfield(typeof(first_filter), :apply_delay_compensation)
+                compensation_enabled = first_filter.apply_delay_compensation
+            end
+        end
+
         # Prepare filter bank data structure
         filter_data = Dict(
             "inputs" => filter_inputs,
             "outputs" => filter_outputs,
+            "compensated_outputs" => filter_compensated_outputs,
             "timestamps" => tick_timestamps,
             "raw_prices" => raw_prices,
             "tick_indices" => tick_indices,
@@ -267,7 +306,8 @@ function save_pipeline_filter_data(filter_inputs, filter_outputs, tick_timestamp
             "filter_count" => length(pipeline_filter_bank.tick_filters),
             "fibonacci_numbers" => pipeline_filter_bank.fibonacci_numbers,
             "filter_names" => pipeline_filter_bank.filter_names,
-            "pipeline_source" => true
+            "pipeline_source" => true,
+            "group_delay_compensation_enabled" => compensation_enabled
         )
 
         # Add GA information if available
@@ -388,7 +428,8 @@ function run_pipeline_ga_test()
 
     # Initialize filter data collection
     filter_inputs = Vector{ComplexF32}()
-    filter_outputs = Vector{Vector{ComplexF32}}()  # One vector per filter
+    filter_outputs = Vector{Vector{ComplexF32}}()  # One vector per filter (raw VCO outputs)
+    filter_compensated_outputs = Vector{Vector{ComplexF32}}()  # Compensated biquad outputs
     tick_timestamps = Vector{String}()  # ASCII timestamp strings from BroadcastMessage
     raw_prices = Vector{Int32}()
     tick_indices = Vector{Int64}()
@@ -423,7 +464,8 @@ function run_pipeline_ga_test()
         end
 
         # Capture filter input/output data using BroadcastMessage
-        capture_filter_data!(filter_inputs, filter_outputs, tick_timestamps, raw_prices, tick_indices,
+        capture_filter_data!(filter_inputs, filter_outputs, filter_compensated_outputs,
+                           tick_timestamps, raw_prices, tick_indices,
                            last_message_ref, production_filter_bank, time() - start_time, tick_count)
 
         if tick_count % 5000 == 0  # Progress every 5K ticks
@@ -456,7 +498,8 @@ function run_pipeline_ga_test()
 
     # Save filter bank input/output data
     timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
-    filter_data_file = save_pipeline_filter_data(filter_inputs, filter_outputs, tick_timestamps, raw_prices, tick_indices,
+    filter_data_file = save_pipeline_filter_data(filter_inputs, filter_outputs, filter_compensated_outputs,
+                                                tick_timestamps, raw_prices, tick_indices,
                                                 production_filter_bank, pipeline_ga_stats, tick_count, timestamp)
 
     # Check for pipeline GA parameter file
