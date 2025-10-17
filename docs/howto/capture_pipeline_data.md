@@ -4,6 +4,8 @@
 
 Captures tick or bar data from the pipeline to timestamped JLD2 files for analysis and plotting.
 
+**Note**: This script can be used from any Julia project that has TickDataPipeline installed. It automatically loads configuration from the installed package's `config/default.toml` file.
+
 ## Command Line Arguments
 
 1. **mode** - `ticks` or `bars` (which data to capture)

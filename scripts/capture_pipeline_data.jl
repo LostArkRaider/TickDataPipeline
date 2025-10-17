@@ -1,12 +1,15 @@
 # scripts/capture_pipeline_data.jl - Capture tick or bar data to JLD2 file
 # Usage: julia --project=. scripts/capture_pipeline_data.jl [ticks|bars] [tick_start] [num_records]
 #
+# This script can be used from any Julia project that has TickDataPipeline installed.
+# It automatically loads configuration from the installed package's config/default.toml file.
+#
 # Arguments:
 #   mode        - "ticks" or "bars" - which data to capture
 #   tick_start  - Starting tick index (skip first N ticks)
 #   num_records - Number of records to capture (ticks or bars depending on mode)
 #
-# Output: Timestamped JLD2 file in data/jld2/ directory
+# Output: Timestamped JLD2 file in data/jld2/ directory (relative to current working directory)
 #
 # File Schema (columnar format for easy CSV export and plotting):
 #   Dict(
@@ -185,8 +188,10 @@ function main()
     println("  Records to capture: $num_records")
     println()
 
-    # Load configuration
-    config = load_config_from_toml("config/default.toml")
+    # Load configuration from installed TickDataPipeline package
+    pkg_dir = dirname(dirname(pathof(TickDataPipeline)))
+    config_path = joinpath(pkg_dir, "config", "default.toml")
+    config = load_config_from_toml(config_path)
 
     # Verify bar processing is enabled if capturing bars
     if mode == "bars" && !config.bar_processing.enabled
