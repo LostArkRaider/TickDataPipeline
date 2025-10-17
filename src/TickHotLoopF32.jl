@@ -77,6 +77,9 @@ mutable struct TickHotLoopState
 
     # AMC encoder state (only used when encoder_type = "amc")
     amc_carrier_increment_Q32::Int32  # Constant phase increment per tick for AMC carrier
+
+    # DERIVATIVE encoder state (only used when encoder_type = "derivative")
+    prev_normalized_ratio::Float32  # ADD THIS LINE
 end
 
 # Initialize state with default values
@@ -109,7 +112,10 @@ function create_tickhotloop_state()::TickHotLoopState
         # AMC state initialization
         # Default carrier period = 16 ticks (matches HEXAD16 compatibility)
         # Carrier increment = 2^32 / 16 = 268,435,456 (π/8 radians per tick)
-        Int32(268435456)  # amc_carrier_increment_Q32
+        Int32(268435456),  # amc_carrier_increment_Q32
+
+         # DERIVATIVE state initialization
+        Float32(0.0)  # ADD THIS LINE - prev_normalized_ratio starts at 0 
     )
 end
 
@@ -223,6 +229,58 @@ end
     update_broadcast_message!(msg, complex_signal, normalization_factor, flag)
 end
 
+# DERIVATIVE encoder: Phase space trajectory encoding
+# Encodes (normalized_dV, acceleration) as complex number for full 360° phase coverage
+# Real part: normalized voltage change (position in normalized voltage space)
+# Imaginary part: change in normalized voltage change (velocity in normalized voltage space)
+#
+# Arguments:
+#   msg: BroadcastMessage to update (modified in-place)
+#   state: TickHotLoopState containing prev_normalized_ratio (modified in-place)
+#   normalized_ratio: Normalized price delta [-1, +1] typically (real component)
+#   normalization_factor: Recovery factor for denormalization
+#   flag: Status flags (UInt8)
+#   imag_scale: Multiplier for imaginary scaling (1.0=no scale, 2.0=×2, 4.0=×4, etc.)
+#
+# Operation:
+#   real = normalized_ratio (current normalized voltage change)
+#   imag = (normalized_ratio - prev_normalized_ratio) × imag_scale (acceleration)
+#   output = real + j·imag
+#
+# Advantages:
+#   - No division required (just subtraction and multiply)
+#   - Full 360° phase coverage (both components can be ±)
+#   - No lookup tables or trig
+#   - Physically meaningful: (position, velocity) in normalized phase space
+#   - Works perfectly with event-driven sampling (dt implicit = 1 event)
+#   - Consistent with other encoders (uses normalized values)
+@inline function process_tick_derivative!(
+    msg::BroadcastMessage,
+    state::TickHotLoopState,
+    normalized_ratio::Float32,
+    normalization_factor::Float32,
+    flag::UInt8,
+    imag_scale::Float32
+)
+    # Compute derivative (change in normalized ratio)
+    # This represents acceleration in normalized voltage space
+    derivative = normalized_ratio - state.prev_normalized_ratio
+    
+    # Scale imaginary component for symmetry with real component
+    # Typical: imag_scale = 2.0 to 4.0 for good circular symmetry
+    scaled_derivative = derivative * imag_scale
+    
+    # Create complex signal from (normalized_ratio, scaled_derivative)
+    # Both can be ± → full 360° coverage
+    complex_signal = ComplexF32(normalized_ratio, scaled_derivative)
+    
+    # Update state for next tick
+    state.prev_normalized_ratio = normalized_ratio
+    
+    # Update broadcast message
+    update_broadcast_message!(msg, complex_signal, normalization_factor, flag)
+end
+
 # Main signal processing function - modifies msg and state in-place
 # Processing chain: validation → jump guard → winsorize → bar stats → normalize → encoder selection → output
 # Encoder selection: HEXAD-16 (discrete 16-phase), CPM (frequency modulation), or AMC (amplitude modulation)
@@ -237,7 +295,8 @@ function process_tick_signal!(
     max_price::Int32,
     max_jump::Int32,
     encoder_type::String,
-    cpm_modulation_index::Float32
+    cpm_modulation_index::Float32,
+    derivative_imag_scale::Float32  # ADD THIS LINE
 )
     price_delta = msg.price_delta
     flag = FLAG_OK
@@ -354,8 +413,12 @@ function process_tick_signal!(
     # Note: With bar-based normalization, recovery uses bar statistics
     normalization_factor = Float32(1.0) / (Float32(state.cached_inv_norm_Q16) * Float32(1.52587890625e-5))
 
-    # Step 10: Encoder selection - HEXAD-16, CPM, or AMC
-    if encoder_type == "amc"
+    # Step 10: Encoder selection - HEXAD-16, CPM, AMC, or DERIVATIVE
+    if encoder_type == "derivative"
+        # DERIVATIVE encoder: Phase space (normalized_dV, acceleration) encoding
+        # Uses normalized_ratio (same as other encoders for consistency)
+        process_tick_derivative!(msg, state, normalized_ratio, normalization_factor, flag, derivative_imag_scale)
+    elseif encoder_type == "amc"
         # AMC encoder: Amplitude-modulated continuous carrier (harmonic elimination)
         process_tick_amc!(msg, state, normalized_ratio, normalization_factor, flag)
     elseif encoder_type == "cpm"

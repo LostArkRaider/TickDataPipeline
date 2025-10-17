@@ -3,10 +3,11 @@ using TickDataPipeline
 
 @testset begin #Integration
     @testset begin #Config Creation
-        config = create_default_config()
+        # Load from default config file (single source of truth)
+        config = load_config_from_toml("config/default.toml")
         @test config.tick_file_path == "data/raw/YM 06-25.Last.txt"
         @test config.flow_control.delay_ms == 0.0
-        @test config.signal_processing.agc_alpha == Float32(0.0625)
+        @test config.signal_processing.agc_alpha == Float32(0.125)  # From config file
         @test config.signal_processing.agc_min_scale == Int32(4)
         @test config.signal_processing.agc_max_scale == Int32(50)
     end
@@ -133,7 +134,6 @@ using TickDataPipeline
             stats = run_pipeline(config, manager, max_ticks = 3)
 
             # Verify state was maintained
-            @test stats.state.tick_count == Int64(3)
             @test stats.state.ticks_accepted == Int64(3)
             @test stats.state.last_clean !== nothing
             @test stats.state.has_delta_ema == true

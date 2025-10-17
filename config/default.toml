@@ -8,7 +8,8 @@ tick_file_path = "data/raw/YM 06-25.Last.txt"
 # - "amc": Amplitude-Modulated Continuous Carrier (harmonic elimination, filter-compatible)
 # - "cpm": Continuous Phase Modulation (frequency modulation)
 # - "hexad16": 16-phase discrete rotation (legacy, produces harmonics)
-encoder_type = "amc"
+# - "derivative": uses derivative of price change for 360 degree rotation
+encoder_type = "derivative"  # Options: "hexad16", "cpm", "amc", "derivative"
 
 # CPM-specific parameters (only used when encoder_type = "cpm")
 cpm_modulation_index = 0.2  # h=0.2 (reduced phase deviation to avoid ±π wraparound)
@@ -17,6 +18,9 @@ cpm_lut_size = 1024          # 1024-entry LUT (only size currently supported)
 # AMC-specific parameters (only used when encoder_type = "amc")
 amc_carrier_period = 16.0    # Carrier period in ticks (16 ticks = π/8 rad/tick, HEXAD16-compatible)
 amc_lut_size = 1024          # 1024-entry LUT (shares CPM_LUT_1024, only size currently supported)
+
+# DERIVATIVE encoder parameters (only used when encoder type = "derivative")
+tick_derivative_imag_scale = 2.0  # Scaling for tick-level imaginary component (2.0-4.0 recommended)
 
 # AGC parameters
 agc_alpha = 0.125           # AGC smoothing factor (1/8)
@@ -40,3 +44,26 @@ standard_buffer_size = 2048
 target_latency_us = 500
 max_latency_us = 1000
 target_throughput_tps = 10000.0
+
+[bar_processing]
+# Enable bar processing (false = disabled, tick-only mode)
+enabled = true
+
+# Bar size in ticks
+ticks_per_bar = 144
+
+# Normalization window in bars (recalculate every N bars)
+# Rule of thumb: normalization_window_bars ≥ 20
+# For 21-tick bars: use ~120 bars
+# For 144-tick bars: use ~24 bars
+# For 233-tick bars: use ~20 bars
+normalization_window_bars = 24
+
+# Winsorize bar deltas (clip to ±threshold)
+winsorize_bar_threshold = 50
+
+# Maximum allowed bar-to-bar delta (jump guard)
+max_bar_jump = 100
+
+# Derivative encoding: bar-level imaginary component scaling
+bar_derivative_imag_scale = 4.0

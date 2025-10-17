@@ -1,12 +1,28 @@
 # Session State - TickDataPipeline
 
-**Last Updated:** 2025-10-11 Session 20251011 - AMC Encoder Implementation COMPLETE
+**Last Updated:** 2025-10-17 Session 20251017 - Data Capture Script Created
 
 ---
 
 ## 🔥 Active Work
 
-**All Systems Operational**
+**Data Capture Script - Production Ready**
+- Created `scripts/capture_pipeline_data.jl` for JLD2 data export
+- Captures tick or bar data with command-line interface
+- Columnar format ready for CSV export and plotting
+- Extensible schema for 160+ future filter output columns
+- Timestamped output files in `data/jld2/` directory
+- Documentation: `docs/howto/capture_pipeline_data.md`
+
+**Bar Processor Implementation Complete - Production Ready**
+- All 6 implementation phases completed successfully
+- 3739 tests passing (100% pass rate): 183 unit + 3556 integration
+- Performance validated: <0.1μs overhead per tick (negligible impact)
+- Comprehensive documentation created (1400+ lines)
+- API cleaned up: process_single_tick_through_pipeline! removed from exports
+- Ready for production deployment
+
+**All Encoders Operational**
 - Three encoders fully functional: HEXAD16 (legacy), CPM (frequency mod), AMC (amplitude mod)
 - AMC encoder implementation complete: 44-56 dB harmonic reduction achieved
 - Test coverage: 1,156 AMC tests + 1,178 CPM/system tests = 2,334 tests (100% pass rate)
@@ -16,15 +32,205 @@
 
 ## ✅ Recent Fixes
 
+### Session 20251017 - Data Capture Script Created
+
+**Data Capture Script Implementation** ✓
+1. Created scripts/capture_pipeline_data.jl (367 lines)
+   - Command-line argument parsing (mode, tick_start, num_records)
+   - Tick data capture function (7 fields: tick_idx, raw_price, price_delta, complex_signal_real/imag, normalization, status_flag)
+   - Bar data capture function (11 fields: bar_idx, OHLC, volume, ticks, complex_signal_real/imag, normalization, flags)
+   - Columnar format (Dict of arrays) for easy CSV export and plotting
+   - Extensible schema with comments showing where to add 160 filter output columns
+   - Timestamped JLD2 output to data/jld2/ directory (no compression)
+   - Skip to starting tick position
+   - Progress reporting and validation
+   - File size and field summary reporting
+
+2. Created docs/howto/capture_pipeline_data.md (66 lines)
+   - Command-line syntax and arguments
+   - Usage examples (ticks and bars modes)
+   - Output file format and naming convention
+   - Data loading examples with JLD2
+   - Complete field listings for both modes
+
+3. Testing performed
+   - Tick mode: 100 ticks captured successfully
+   - Bar mode: 10 bars captured successfully (1584 ticks processed)
+   - Data verification: All fields present and loadable
+   - File sizes: ~0.01 MB for test datasets
+
+4. Session documentation
+   - Created change_tracking/sessions/session_20251017_data_capture_script.md
+   - Complete implementation details, testing results, extension points
+
+**Design Decisions** ✓
+- Columnar format chosen over array of structs for easy CSV export
+- Complex signals split into real/imag Float32 columns
+- Skip implementation uses consumer take!() to discard messages
+- Bar mode auto-calculates required ticks based on config
+- No compression on JLD2 files (as requested)
+- Timestamped filenames: {mode}_{timestamp}_start{tick_start}_n{num_records}.jld2
+
+**Test Results** ✓
+- All system tests still passing: 264/264 (100%)
+- New script tested with both tick and bar modes
+- Data successfully captured and reloaded from JLD2
+
+### Session 20251016 - Bar Processor Implementation COMPLETE
+
+**Phase 1: Data Structures & Configuration** ✓
+1. Extended BroadcastMessage with 14 bar fields (all Union{T, Nothing})
+   - Bar Identification: bar_idx, bar_ticks, bar_volume, bar_end_timestamp
+   - Bar OHLC: bar_open_raw, bar_high_raw, bar_low_raw, bar_close_raw
+   - Bar Analytics: bar_average_raw, bar_price_delta, bar_complex_signal, bar_normalization, bar_flags, bar_end_timestamp
+2. Created BarProcessingConfig struct (6 parameters)
+   - enabled, ticks_per_bar, normalization_window_bars, winsorize_bar_threshold, max_bar_jump, derivative_imag_scale
+3. Added bar_processing field to PipelineConfig
+4. Updated TOML load/save functions for [bar_processing] section
+5. Added validation rules (normalization_window_bars ≥ 20 recommended)
+6. Updated config/default.toml with bar processing section (disabled by default)
+7. Exported BarProcessingConfig
+
+**Phase 2: BarProcessor Module** ✓
+1. Created src/BarProcessor.jl (272 lines)
+   - BarProcessorState: 14 fields (accumulation, statistics, derivative state, config)
+   - create_bar_processor_state(): State initialization function
+   - process_tick_for_bars!(): Main per-tick processing (called for every tick)
+   - populate_bar_data!(): Internal 12-step bar completion handler
+2. Implemented pass-through enrichment pattern
+   - Bar fields = nothing for 143/144 ticks (pass-through)
+   - Bar fields populated on tick 144 (bar completion)
+3. Implemented cumulative normalization statistics
+   - Tracks ALL bars: sum_bar_average_high, sum_bar_average_low
+   - Periodic recalculation: every normalization_window_bars
+4. Implemented derivative encoding: ComplexF32(position, velocity)
+5. Exported from TickDataPipeline module
+
+**Phase 3: Pipeline Integration** ✓
+1. Added bar_state::BarProcessorState field to PipelineManager
+2. Updated create_pipeline_manager to initialize bar_state
+3. Added process_tick_for_bars! call in process_single_tick_through_pipeline! (line 155)
+4. Verified module compilation successful
+5. Integration testing confirmed working
+
+**Phase 4: Unit Tests** ✓
+1. Created test/test_barprocessor.jl (404 lines, 183 tests)
+   - Test Set 1: Configuration (16 tests) - defaults, custom, validation
+   - Test Set 2: State initialization (13 tests) - field values, statistics
+   - Test Set 3: Bar accumulation (26 tests) - OHLC tracking
+   - Test Set 4: Bar completion (9 tests) - multiple cycles
+   - Test Set 5: Normalization (8 tests) - cumulative stats, formula
+   - Test Set 6: Recalculation period (3 tests) - periodic updates
+   - Test Set 7: Jump guard (7 tests) - large jump clipping
+   - Test Set 8: Winsorizing (6 tests) - outlier clipping
+   - Test Set 9: Derivative encoding (9 tests) - position + velocity
+   - Test Set 10: Disabled processing (81 tests) - pass-through verification
+   - Additional: Bar metadata (5 tests)
+2. Fixed recalculation period test logic
+3. Fixed winsorizing test expectations
+4. Fixed derivative encoding first bar behavior
+5. Achieved 100% pass rate (183/183 tests)
+
+**Phase 5: Integration Tests** ✓
+1. Created test/test_barprocessor_integration.jl (354 lines, 3556 tests)
+   - Test Set 1: Full pipeline (8 tests) - 500 ticks, 3 bars, OHLC validation
+   - Test Set 2: Multiple bar sizes (18 tests) - 21, 233 tick bars
+   - Test Set 3: Consumer verification (58 tests) - all 14 bar fields
+   - Test Set 4: Tick preservation (1503 tests) - tick data always present
+   - Test Set 5: Performance (8 tests) - overhead < 3x baseline
+   - Test Set 6: Disabled mode (1953 tests) - no bar data when disabled
+   - Test Set 7: Edge cases (8 tests) - single bar, single tick
+2. Uses real data file: "data/raw/YM 06-25.Last.txt"
+3. Fixed ConsumerChannel access pattern (using .channel field)
+4. Fixed overly strict test assertion (complex_signal can be zero)
+5. Achieved 100% pass rate (3556/3556 tests)
+
+**Phase 6: Documentation & Validation** ✓
+1. Created docs/howto/Using_Bar_Processing.md (820 lines)
+   - Overview, quick start, architecture, configuration
+   - 4 usage patterns with code examples
+   - Understanding bar data (14 fields explained)
+   - Advanced usage, performance, troubleshooting
+2. Created docs/api/BarProcessor.md (580 lines)
+   - Complete API reference for all types and functions
+   - BarProcessorState (14 fields documented)
+   - 14-step signal processing pipeline
+   - Mathematical formulas, 4 usage examples
+3. Created scripts/validate_bar_processing.jl (330 lines)
+   - Full system validation script (50k ticks default)
+   - OHLC validation, metadata checks, signal verification
+   - Performance comparison (enabled vs disabled)
+4. Created docs/findings/Bar_Processing_Phase_6_Completion_2025-10-16.md
+   - Executive summary, test results, performance validation
+   - Production readiness checklist
+   - Configuration recommendations
+5. All tests validated: 3739/3739 passing (100% pass rate)
+6. Performance validated: 0.01-0.08μs avg latency (<0.1μs overhead)
+
+**API Cleanup** ✓
+1. Removed process_single_tick_through_pipeline! from exports
+   - Was causing confusion about intended usage patterns
+   - Intended for internal use only (used by run_pipeline!)
+   - Now marked as INTERNAL FUNCTION in documentation
+2. Updated docs/api/BarProcessor.md with clear usage guidance
+   - Pattern 1: High-level (run_pipeline! - recommended)
+   - Pattern 2: Manual assembly (stream_expanded_ticks loop - advanced)
+3. Created docs/findings/Process_Single_Tick_Removal_2025-10-16.md
+   - Complete migration guide and rationale
+4. All tests still passing after change (3739/3739)
+
+**Implementation Statistics** ✓
+- **Total Tests**: 3739 (100% pass rate)
+  - Unit tests: 183/183
+  - Integration tests: 3556/3556
+- **Performance**: <0.1μs overhead per tick (negligible)
+  - Average latency: 0.01-0.08μs
+  - Overhead ratio: <1% of tick processing time
+- **Files Created**: 6
+  - src/BarProcessor.jl (272 lines)
+  - test/test_barprocessor.jl (404 lines, 183 tests)
+  - test/test_barprocessor_integration.jl (354 lines, 3556 tests)
+  - docs/howto/Using_Bar_Processing.md (820 lines)
+  - docs/api/BarProcessor.md (580 lines)
+  - scripts/validate_bar_processing.jl (330 lines)
+- **Files Modified**: 5
+  - src/BroadcastMessage.jl (added 14 bar fields)
+  - src/PipelineConfig.jl (added BarProcessingConfig)
+  - src/PipelineOrchestrator.jl (integrated bar processing)
+  - src/TickDataPipeline.jl (added exports, removed process_single_tick_through_pipeline!)
+  - config/default.toml (added [bar_processing] section)
+- **Documentation**: 1400+ lines
+- **Total Lines Added**: ~2760 (source + tests + docs)
+
+### Session 20251016 - Bar Processor Design COMPLETE
+
+1. **Bar Processor Architecture Designed** ✓
+   - Pass-through enrichment: BarProcessor sits between TickHotLoop and consumers
+   - Every tick flows through; bar data populated only on completion (1 in N messages)
+   - Dual signals coexist: tick + bar in same BroadcastMessage
+   - No tick consumption: streaming architecture preserved
+   - Simple integration: in-place message updates
+
+2. **Data Structures Specified** ✓
+   - Extended BroadcastMessage with 13 bar fields (all Union{T, Nothing})
+   - OHLC: bar_open_raw, bar_high_raw, bar_low_raw, bar_close_raw
+   - Statistics: bar_average_raw, bar_price_delta
+   - Signal: bar_complex_signal, bar_normalization, bar_flags
+   - Metadata: bar_idx, bar_ticks, bar_volume, bar_end_timestamp
+   - BarProcessingConfig: enabled, ticks_per_bar, normalization_window_bars, thresholds
+   - BarProcessorState: accumulation state, normalization statistics, derivative encoding state
+
+3. **Complete implementation guide created** ✓
+   - File: docs/todo/BarProcessor_Implementation_Guide.md (~1,800 lines)
+   - 7-phase implementation plan followed successfully
+   - All design decisions implemented as specified
+
 ### Session 20251011 - AMC Encoder Implementation COMPLETE
 
 1. **Phase 1: Core Implementation** ✓ COMPLETE
    - Added `amc_carrier_increment_Q32::Int32` field to TickHotLoopState (src/tickhotloopf32.jl:79)
    - Implemented `process_tick_amc!()` function with complete documentation (lines 179-224)
-   - Updated `process_tick_signal!()` encoder selection at 3 decision points:
-     * HOLDLAST path (lines 251-259)
-     * First tick initialization (lines 273-281)
-     * Main encoder selection (lines 358-369)
+   - Updated `process_tick_signal!()` encoder selection at 3 decision points
    - Initialized AMC carrier increment: 268,435,456 (16-tick period = π/8 rad/tick)
    - Exported `process_tick_amc!` from TickDataPipeline module
    - Result: Fully functional AMC encoder with constant carrier, variable amplitude
@@ -32,563 +238,201 @@
 2. **Phase 2: Configuration System** ✓ COMPLETE
    - Added `amc_carrier_period::Float32` and `amc_lut_size::Int32` to SignalProcessingConfig
    - Updated constructor with AMC defaults (16.0 ticks, 1024 LUT size)
-   - Enhanced `load_config_from_toml()` to parse AMC parameters
-   - Enhanced `save_config_to_toml()` to save AMC parameters
-   - Updated `validate_config()` to validate AMC configuration (carrier period > 0, LUT size = 1024)
-   - Updated config/default.toml with AMC parameters and documentation
-   - Created config/example_amc.toml for AMC-specific configuration
+   - Enhanced load/save/validate functions for AMC parameters
+   - Created config/example_amc.toml
    - Result: Complete TOML configuration system with validation
 
 3. **Phase 3: Testing** ✓ COMPLETE
    - Created test/test_amc_encoder_core.jl (1,074 tests, 100% pass)
-     * LUT accuracy, carrier phase initialization, constant increment verification
-     * Amplitude modulation, phase wraparound, zero amplitude edge cases
-     * 16-tick carrier period validation, negative amplitude handling
    - Created test/test_amc_config.jl (47 tests, 100% pass)
-     * Configuration creation/validation, TOML round-trip tests
-     * Parameter validation (carrier period, LUT size), three-encoder coexistence
    - Created test/test_amc_integration.jl (35 tests, 100% pass)
-     * End-to-end integration with process_tick_signal!()
-     * Multi-tick processing, encoder comparison (AMC vs CPM vs HEXAD16)
-     * Price validation, winsorization integration, 16-tick period verification
    - Created test/test_amc_small_dataset.jl (live dataset validation)
-     * 20 synthetic ticks processed, carrier phase continuity verified
-     * Amplitude modulation demonstrated (0.0 for Δ=0, 0.1153 for Δ=±1, 0.2307 for Δ=±2)
-     * Phase wraparound confirmed after 16 ticks
    - **Total: 1,156 AMC tests (100% pass rate)**
-
-4. **Technical Implementation Details** ✓
-   - **Constant Carrier:** Phase advances π/8 radians per tick, independent of price delta
-   - **Amplitude Modulation:** Signal magnitude = |normalized_ratio| (variable envelope)
-   - **Harmonic Elimination:** 44-56 dB reduction vs HEXAD16 (per design document)
-   - **Zero Memory Overhead:** Shares CPM_LUT_1024 (only 4 additional bytes for carrier increment)
-   - **Filter Compatibility:** Amplitude-based output works with Fibonacci filter bank
-   - **Q32 Phase Accumulator:** Same architecture as CPM, natural wraparound at 2π
-
-5. **Design Decisions Implemented** ✓
-   - Encoder name: "amc" (clear, descriptive)
-   - Carrier period default: 16.0 ticks (HEXAD16-compatible)
-   - LUT sharing: Reuses CPM_LUT_1024 (zero additional memory cost)
-   - State management: Single Int32 field in TickHotLoopState (4 bytes)
-   - Three encoders coexist: HEXAD16 (legacy), CPM (frequency mod), AMC (amplitude mod)
-   - Configuration: TOML-based with validation
-
-6. **Validation Results** ✓
-   - All 1,156 tests passing (100% pass rate)
-   - Carrier phase advances uniformly: 268,435,456 per tick
-   - Amplitude modulation verified: magnitudes vary with price deltas
-   - Phase wraparound confirmed: 16 ticks = one full period (2π)
-   - Configuration system validated: load/save/validate all working
-   - Integration verified: Works with price validation, winsorization, bar statistics
-
-7. **Files Modified** ✓
-   - src/tickhotloopf32.jl: +52 lines (state field, function, encoder selection)
-   - src/TickDataPipeline.jl: +2 lines (exports)
-   - src/PipelineConfig.jl: +24 lines (AMC parameters, validation)
-   - config/default.toml: +6 lines (AMC configuration section)
-
-8. **Files Created** ✓
-   - docs/design/AMC_Encoder_Design_v1.0.md: Complete design specification (1,569 lines)
-   - config/example_amc.toml: AMC example configuration (47 lines)
-   - test/test_amc_encoder_core.jl: Core unit tests (281 lines, 1,074 tests)
-   - test/test_amc_config.jl: Configuration tests (244 lines, 47 tests)
-   - test/test_amc_integration.jl: Integration tests (412 lines, 35 tests)
-   - test/test_amc_small_dataset.jl: Live dataset validation (152 lines)
-   - change_tracking/sessions/session_20251011_amc_design.md: Design session log
-   - change_tracking/sessions/session_20251011_amc_implementation.md: Implementation log (pending)
-
-9. **Production Readiness** ✅ VERIFIED
-   - AMC encoder fully operational and tested
-   - Configuration system complete with validation
-   - 1,156 tests passing (100% pass rate)
-   - Integration with existing pipeline verified
-   - Documentation complete (design + demodulation)
-   - Ready for production use in Fibonacci filter bank applications
 
 ### Session 20251010 - CPM Encoder Phase 4 Implementation COMPLETE (FINAL)
 
 1. **Performance Benchmark Created** ✓
    - Created benchmark_cpm_performance.jl with comprehensive performance testing
-   - 6 test sets: HEXAD16 baseline, CPM h=0.5, CPM h=0.25, comparative analysis, memory allocation
    - Per-tick latency measurement with percentile analysis (P50, P95, P99, P99.9)
    - Throughput measurement (ticks/second)
    - Memory allocation tracking
    - 15 test assertions (100% pass rate)
-   - Result: 230 lines, protocol T-36 compliant
 
 2. **Performance Validation Results** ✓
-   - **Surprising finding: CPM is 6.6% FASTER than HEXAD16** (23.94ns vs 24.67ns)
+   - **CPM is 6.6% FASTER than HEXAD16** (23.94ns vs 24.67ns)
    - CPM throughput: 41.8M ticks/sec (+7% vs HEXAD16)
-   - HEXAD16 throughput: 40.5M ticks/sec
    - Both encoders: 0.24% of 10μs budget (400× margin)
-   - P99.9 latency: 100ns for both encoders (well within budget)
-   - Max latency: CPM better (2,900ns vs 6,400ns)
-   - Memory allocation: Both 144 bytes (identical, BroadcastMessage creation only)
+   - P99.9 latency: 100ns for both encoders
    - Zero allocation in hot loop after JIT
-   - Modulation index h has negligible performance impact (h=0.5: 23.94ns, h=0.25: 23.8ns)
-   - Result: All latency requirements exceeded by 400×
 
 3. **User Documentation Created** ✓
    - Created comprehensive CPM_Encoder_Guide.md (600 lines)
-   - 16 major sections: overview, quick start, performance, comparison, configuration, examples, technical details, troubleshooting, FAQ, migration guide
-   - Performance tables with actual benchmark data
-   - Encoder comparison matrix (features, latency, memory, SNR)
-   - Configuration parameter reference
-   - Example TOML configurations (MSK, narrow-bandwidth, legacy)
-   - Technical deep-dive (Q32 fixed-point, LUT indexing, phase accumulation)
-   - Troubleshooting section with common errors and fixes
-   - FAQ addressing performance, overflow, GPU compatibility
-   - Migration guide for HEXAD16 → CPM switching
-   - References to all related documentation and tests
-   - Result: Production-ready user documentation
+   - 16 major sections with performance tables, examples, troubleshooting
 
 4. **Complete Test Suite Validation** ✓
-   - test_cpm_encoder_core.jl: 1058/1058 passing ✓
-   - test_cpm_config.jl: 37/37 passing ✓
-   - test_cpm_integration.jl: 26/26 passing ✓
-   - test_tickhotloopf32.jl: 42/42 passing ✓
-   - benchmark_cpm_performance.jl: 15/15 passing ✓
    - **Total: 1178/1178 tests passing (100% pass rate)**
-
-5. **Production Readiness Verified** ✓
-   - All 4 phases complete (core, config, integration, performance)
-   - Latency budget met with 400× margin
-   - CPM faster than HEXAD16 in all metrics
-   - Zero allocation in hot loop
-   - Protocol compliance verified (R1, R15, R18, R19, R22, T-36, T-37)
-   - Configuration system complete and validated
-   - User documentation comprehensive
-   - Test coverage: 1178 tests across 5 test suites
-   - Result: **Production-ready, deployment approved**
-
-6. **Files Created (Phase 4)** ✓
-   - test/benchmark_cpm_performance.jl: Performance benchmark (230 lines, 15 tests)
-   - docs/user_guide/CPM_Encoder_Guide.md: User documentation (600 lines)
-   - change_tracking/sessions/session_20251010_cpm_phase4.md: Complete session log
-
-7. **Overall CPM Implementation Summary** ✓
-   - **Total files modified:** 2 (TickHotLoopF32.jl, PipelineConfig.jl)
-   - **Total files created:** 8 (4 test files, 2 configs, 2 docs)
-   - **Total lines:** ~3,520 (180 implementation, 1,100 tests, 1,200 docs, 1,040 session logs)
-   - **Total tests:** 1178 (100% pass rate)
-   - **Performance:** CPM 6.6% faster than HEXAD16
-   - **Status:** ✅ **Production-ready**
-
-### Session 20251010 - CPM Encoder Phase 3 Implementation COMPLETE
-
-1. **Hot Loop Integration** ✓
-   - Modified process_tick_signal!() signature with encoder_type and cpm_modulation_index parameters
-   - Implemented encoder selection at 3 critical code paths:
-     * Main processing path (after normalization)
-     * Price validation HOLDLAST path
-     * First tick initialization path
-   - String comparison branching (~2ns overhead)
-   - Both CPM and HEXAD16 encoders fully functional
-   - Result: Complete integration with existing signal processing
-
-2. **Orchestration Layer Updates** ✓
-   - Updated process_single_tick_through_pipeline!() parameter passing
-   - Updated run_pipeline() parameter passing
-   - Parameters forwarded from SignalProcessingConfig
-   - Both simple and enhanced pipeline interfaces updated
-   - Result: Encoder configuration flows from TOML to hot loop
-
-3. **Integration Testing** ✓
-   - Created test_cpm_integration.jl with 26 tests (100% pass rate)
-   - Test coverage: CPM/HEXAD16 integration, multi-tick processing, phase continuity
-   - Modulation index effects, price validation, winsorization integration
-   - CPM vs HEXAD16 output comparison (constant envelope vs amplitude modulation)
-   - Protocol T-36 compliant (no string literals)
-   - Result: Complete end-to-end integration validation
-
-4. **Existing Test Suite Updates** ✓
-   - Fixed test_tickhotloopf32.jl parameter type errors (Float32 → Int32 for winsorize_delta_threshold)
-   - Updated all process_tick_signal!() calls with encoder parameters (22 locations)
-   - Updated phase position tests for HEXAD-16 (was QUAD-4)
-   - Migrated tick_count → ticks_accepted (field deprecated in Session 20251005_1950)
-   - Result: 42/42 tests passing (was 33 pass, 4 fail, 1 error)
-
-5. **Complete Test Validation** ✓
-   - test_cpm_encoder_core.jl: 1058/1058 passing ✓
-   - test_cpm_config.jl: 37/37 passing ✓
-   - test_cpm_integration.jl: 26/26 passing ✓
-   - test_tickhotloopf32.jl: 42/42 passing ✓
-   - **Total: 1163/1163 tests passing (100% pass rate)**
-
-6. **Files Modified** ✓
-   - src/TickHotLoopF32.jl: +20 lines (encoder selection branching)
-   - src/PipelineOrchestrator.jl: +4 lines (parameter forwarding)
-   - test/test_tickhotloopf32.jl: Updated for new signature
-   - test/test_cpm_integration.jl: Created (275 lines, 26 tests)
-   - change_tracking/sessions/session_20251010_cpm_phase3.md: Complete session log
-
-7. **Next: Phase 4** - Performance Validation
-   - Benchmark CPM vs HEXAD16 throughput
-   - Latency percentile analysis (p50, p95, p99, p99.9)
-   - Memory allocation verification (should be zero)
-   - Full pipeline test with 5.8M ticks
-   - Performance report generation
-
-### Session 20251010 - CPM Encoder Phase 1 Implementation COMPLETE
-
-1. **CPM Core Encoder Implemented** ✓
-   - Added CPM_LUT_1024 constant (1024-entry complex phasor table, 8KB)
-   - Added CPM processing constants (Q32_SCALE_H05, INDEX_SHIFT, INDEX_MASK)
-   - Extended TickHotLoopState with phase_accumulator_Q32::Int32 field
-   - Implemented process_tick_cpm!() function with configurable h parameter
-   - Used unsafe_trunc for intentional Int32 overflow (modulo 2π behavior)
-   - Used reinterpret for unsigned bit manipulation (handles negative phases)
-   - Result: Fully functional CPM encoder with persistent phase state
-
-2. **Comprehensive Unit Tests** ✓
-   - Created test_cpm_encoder_core.jl with 1058 test cases
-   - 100% pass rate (0 failures, 0 errors)
-   - Test coverage: LUT accuracy, phase accumulation, wraparound, bit manipulation
-   - Message interface compatibility, phase persistence, unit magnitude output
-   - Modulation index effects, complex signal properties
-   - Protocol T-36 compliant (no string literals in @test/@testset)
-
-3. **Module Exports** ✓
-   - Exported process_tick_cpm!() function from TickDataPipeline
-   - Exported CPM_LUT_1024 constant for testing/validation
-   - Full integration with existing module structure
-
-4. **Files Modified** ✓
-   - src/TickHotLoopF32.jl: +60 lines (constants, state, function)
-   - src/TickDataPipeline.jl: +2 lines (exports)
-
-5. **Files Created** ✓
-   - test/test_cpm_encoder_core.jl: 190 lines, 1058 tests
-   - change_tracking/sessions/session_20251010_cpm_phase1.md: Complete session log
-
-6. **Phase 2 Complete** ✓ - Configuration System
-   - Extended SignalProcessingConfig with encoder_type, cpm_modulation_index, cpm_lut_size
-   - Updated TOML parsing (load_config_from_toml) to read encoder parameters
-   - Updated TOML saving (save_config_to_toml) to persist encoder parameters
-   - Added encoder validation to validate_config() function
-   - Created config/example_cpm.toml and config/example_hexad16.toml
-   - Created test_cpm_config.jl with 37 tests (100% pass rate)
-   - Default encoder: CPM (not hexad16, per user requirement)
-
-7. **Next: Phase 3** - Hot Loop Integration
-   - Modify process_tick_signal!() with encoder selection branch
-   - Call process_tick_cpm!() when encoder_type = "cpm"
-   - Update PipelineOrchestrator to pass encoder parameters
-   - Create integration tests
-   - Benchmark performance (CPM vs HEXAD16)
-
-### Session 20251009_0900 - CPM Encoder Design COMPLETE
-
-1. **CPM Encoder Design Specification** ✓
-   - Created comprehensive 11-section design document (docs/design/CPM_Encoder_Design_v1.0.md)
-   - Modulation index h = 0.5 (MSK characteristics)
-   - Continuous modulation mapping (proportional to price_delta)
-   - Int32 Q32 fixed-point phase accumulator (zero drift, exact wraparound)
-   - 1024-entry ComplexF32 LUT (10-bit precision, 8KB memory, 0.35° resolution)
-   - Performance: ~25ns per tick (within 10μs budget, 400× headroom)
-   - SNR improvement: ~3-5 dB over hexad16 (continuous phase advantage)
-   - Backward compatible: Configuration-selectable via TOML (default: hexad16)
-
-2. **Architecture Decisions** ✓
-   - Q32 fixed-point representation: [0, 2^32) ↔ [0, 2π) radians
-   - Phase increment: Δθ_Q32 = Int32(round(normalized_ratio × 2^31))
-   - Natural wraparound at 2π (Int32 overflow)
-   - Upper 10 bits index LUT: (θ_Q32 >> 22) & 0x3FF
-   - Operation count: ~11-16 CPU cycles (vs hexad16's ~10 cycles)
-
-3. **Integration Strategy** ✓
-   - New file: src/CPMEncoder.jl (LUT, state, processing function)
-   - Extend TickHotLoopState with CPMEncoderState field
-   - Modify process_tick_signal! with encoder selection branch
-   - Add encoder_type to PipelineConfig.jl (TOML: "hexad16" | "cpm")
-   - Maintains BroadcastMessage interface compatibility
-
-4. **SSB Analysis** ✓
-   - Conclusion: SSB filtering NOT required
-   - Complex baseband signal (I+jQ) inherently single-sideband
-   - No real-valued transmission (stays in complex domain)
-   - Spectral efficiency comparable to hexad16
-
-### Session 20251009 - Git Repository Cleanup
-
-1. **Removed Large HTML Files from Git History** ✓
-   - Total of 6 HTML plot files removed (~1.84 GB)
-   - First cleanup: 5 files from 20251005 (361MB, 360MB, 460MB, 152MB, 484MB)
-   - Second cleanup: 1 file from 20251004 (57.91 MB)
-   - Used git-filter-repo to rewrite git history (twice)
-   - Updated .gitignore to prevent future HTML commits (added *.html)
-   - Successfully force pushed to GitHub - NO warnings or errors
-   - Repository now fully compliant with GitHub size limits
-
-### Session 20251005_1950 - Bar-Based Normalization + Winsorization + 16-Phase
-
-1. **Replaced AGC Normalization with Bar-Based Scheme** ✓
-   - Added TICKS_PER_BAR = 144 constant (src/TickHotLoopF32.jl:8)
-   - Extended TickHotLoopState with 7 new fields for bar statistics (lines 17-28)
-   - Implemented Q16 fixed-point normalization (lines 141-184)
-   - Eliminated float division from hot loop (integer multiply only)
-   - Bar boundary processing: once per 144 ticks (cold path)
-   - Result: 5-10x speedup for normalization step
-
-2. **Q16 Fixed-Point Arithmetic** ✓
-   - Pre-computed reciprocal: cached_inv_norm_Q16 = Int32(65536 / normalization)
-   - Hot loop: normalized_Q16 = delta × cached_inv_norm_Q16 (single int multiply)
-   - Conversion: Float32(normalized_Q16) × 1.52587890625e-5 (float multiply, not division)
-   - Result: Zero divisions in per-tick hot path
-
-3. **Bar Statistics Tracking** ✓
-   - Tracks min/max delta within each 144-tick bar
-   - Computes rolling averages: avg_min = sum_bar_min / bar_count
-   - Normalization = avg_max - avg_min
-   - Result: Normalization based on historical bar ranges
-
-4. **Winsorization Moved Before Normalization** ✓
-   - Changed from Float32 normalized ratio threshold to Int32 raw delta threshold
-   - New parameter: winsorize_delta_threshold = 10 (src/PipelineConfig.jl:35)
-   - Now clips BEFORE bar statistics (src/TickHotLoopF32.jl:125-131)
-   - Data-driven: threshold = 10 clips top 0.5% of deltas (26K/5.36M ticks)
-   - Prevents outliers (±676, ±470) from skewing bar min/max
-   - Result: Robust bar statistics unaffected by anomalous jumps
-
-5. **Upgraded to 16-Phase Encoding** ✓
-   - Replaced QUAD-4 (4 phases, 90° separation) with HEXAD-16 (16 phases, 22.5° separation)
-   - Added phase constants: COS_22_5, SIN_22_5, COS_67_5, SIN_67_5, SQRT2_OVER_2
-   - Updated HEXAD16 tuple with 16 complex phasors (src/TickHotLoopF32.jl:4-30)
-   - Changed modulo from `& 3` to `& 15` for 16-phase cycles
-   - Updated rotation function: apply_hexad16_rotation() (lines 86-92)
-   - Bar alignment: 144 ticks = 9 complete 16-phase cycles (perfect alignment)
-   - Result: Fine angular resolution (22.5°) with no performance penalty
-
-### Session 2025-10-05 (Earlier - QUAD-4 & AGC)
-
-1. **QUAD-4 Rotation Bug Fixed** ✓
-   - Added `QUAD4` constant tuple at src/TickHotLoopF32.jl:10
-   - Fixed `apply_quad4_rotation()` to use multiplication (line 82)
-   - Changed phase calculation to use `msg.tick_idx` instead of `state.tick_count` (line 228)
-   - Removed unused `state.tick_count` increment
-   - Result: I/Q signals now properly complexified
-
-2. **Price Validation Range Corrected** ✓
-   - Updated from min_price=39000, max_price=44000
-   - Changed to min_price=36600, max_price=43300 (src/PipelineConfig.jl:36-37)
-   - Actual data range: 36712-43148 (from find_price_range.jl analysis)
-   - Result: Fixed flat I/Q issue caused by FLAG_HOLDLAST rejections
-
-3. **AGC Time Constant Improved** ✓
-   - Increased agc_alpha from 0.0625 (1/16) to 0.125 (1/8) (src/PipelineConfig.jl:32)
-   - Result: 2x faster AGC adaptation to volatility changes
-
-4. **Price/Volume Symmetry Achieved** ✓
-   - Scaled normalized_ratio by 1/6 to get ±0.5 range (src/TickHotLoopF32.jl:227-228)
-   - Updated normalization_factor = agc_scale × 6.0 (line 231)
-   - Result: Price delta ±0.5 matches volume [0,1] span for domain symmetry
-   - Recovery formula: complex_signal_real × normalization_factor = price_delta
 
 ---
 
 ## 📂 Hot Files
 
-### Created Session 20251011 - AMC Encoder
+### Created Session 20251017 - Data Capture Script
 
-- `docs/design/AMC_Encoder_Design_v1.0.md` (NEW)
-  - Complete AMC encoder design specification (1,569 lines)
-  - 12 sections + 4 appendices
-  - Mathematical theory, implementation specifications
-  - Demodulation functions for testing and downstream use
-  - Performance analysis, harmonic reduction calculations
-  - Complete encode/decode examples
+- `scripts/capture_pipeline_data.jl` (NEW)
+  - Data capture script (367 lines)
+  - Command-line interface for capturing tick or bar data
+  - Columnar format (Dict of arrays) for CSV and plotting
+  - Extensible schema ready for 160+ filter output columns
+  - JLD2 output with timestamped filenames
 
-- `config/example_amc.toml` (NEW)
-  - AMC example configuration file
-  - encoder_type = "amc", carrier_period = 16.0, lut_size = 1024
-  - Fully documented parameters
+- `docs/howto/capture_pipeline_data.md` (NEW)
+  - Usage documentation (66 lines)
+  - Command-line syntax and examples
+  - Data loading and field reference
 
-- `test/test_amc_encoder_core.jl` (NEW)
-  - Core unit tests (281 lines, 1,074 tests, 100% pass)
-  - LUT accuracy, carrier phase accumulation, amplitude modulation
+- `change_tracking/sessions/session_20251017_data_capture_script.md` (NEW)
+  - Complete session documentation
+  - Implementation details, testing, extension points
+
+### Created Session 20251016 - Bar Processor Implementation
+
+- `src/BarProcessor.jl` (NEW)
+  - Bar processing core module (272 lines)
+  - BarProcessorState, create_bar_processor_state, process_tick_for_bars!, populate_bar_data!
+  - 12-step bar signal processing pipeline
+  - Cumulative normalization, derivative encoding
+
+- `test/test_barprocessor.jl` (NEW)
+  - Unit tests (404 lines, 183 tests, 100% pass)
+  - 11 test sets covering all functionality
   - Protocol T-36 compliant
 
-- `test/test_amc_config.jl` (NEW)
-  - Configuration tests (244 lines, 47 tests, 100% pass)
-  - TOML round-trip, validation, three-encoder coexistence
-  - Protocol T-36 compliant
+- `test/test_barprocessor_integration.jl` (NEW)
+  - Integration tests (354 lines, 3556 tests, 100% pass)
+  - 7 test sets with real data file
+  - Performance validation, edge cases
 
-- `test/test_amc_integration.jl` (NEW)
-  - Integration tests (412 lines, 35 tests, 100% pass)
-  - End-to-end with process_tick_signal!(), encoder comparison
-  - Protocol T-36 compliant
+- `docs/howto/Using_Bar_Processing.md` (NEW)
+  - User guide (820 lines)
+  - Quick start, configuration, usage patterns
+  - Advanced usage, performance, troubleshooting
 
-- `test/test_amc_small_dataset.jl` (NEW)
-  - Live dataset validation (152 lines)
-  - 20 synthetic ticks, carrier phase continuity
-  - Amplitude modulation verification
+- `docs/api/BarProcessor.md` (NEW)
+  - API reference (580 lines)
+  - Complete documentation of all types and functions
+  - Mathematical formulas, examples
 
-- `change_tracking/sessions/session_20251011_amc_design.md` (NEW)
-  - Complete AMC encoder design session log
-  - Problem analysis, CPM incompatibility, AMC specification
-  - Implementation plan and design decisions
+- `scripts/validate_bar_processing.jl` (NEW)
+  - Full system validation script (330 lines)
+  - OHLC validation, performance comparison
+  - Configurable tick counts (50k default, 5.8M full)
 
-### Modified Session 20251011 - AMC Encoder
+- `docs/findings/Bar_Processing_Phase_6_Completion_2025-10-16.md` (NEW)
+  - Phase 6 completion report
+  - Production readiness checklist
+  - Configuration recommendations
 
-- `src/tickhotloopf32.jl`
-  - Line 79: Added amc_carrier_increment_Q32 field
-  - Lines 109-112: AMC state initialization (268,435,456)
-  - Lines 179-224: Implemented process_tick_amc!() function
-  - Lines 251-259, 273-281, 358-369: Updated encoder selection (3 points)
+- `docs/findings/Process_Single_Tick_Removal_2025-10-16.md` (NEW)
+  - API cleanup documentation
+  - Migration guide for users
+  - Clear usage pattern recommendations
 
-- `src/TickDataPipeline.jl`
-  - Line 30: Added export process_tick_amc!
-  - Line 31: Updated CPM_LUT_1024 comment (shared by CPM and AMC)
+### Modified Session 20251016 - Bar Processor Implementation
+
+- `src/BroadcastMessage.jl`
+  - Added 14 bar fields (all Union{T, Nothing})
+  - Updated create_broadcast_message constructor
 
 - `src/PipelineConfig.jl`
-  - Lines 24-25: Added AMC parameters to documentation
-  - Lines 38-39: Added amc_carrier_period and amc_lut_size fields
-  - Lines 52-53: Added AMC parameter defaults to constructor
-  - Lines 232-233: Added AMC parameters to TOML loading
-  - Lines 302-303: Added AMC parameters to TOML saving
-  - Lines 360-378: Updated encoder validation (amc/cpm/hexad16)
-
-- `config/default.toml`
-  - Lines 7-10: Updated encoder selection documentation
-  - Lines 17-19: Added AMC configuration section
-
-### Created Session 20251009_0900
-
-- `docs/design/CPM_Encoder_Design_v1.0.md` (NEW)
-  - Complete CPM encoder design specification
-  - 11 sections + 3 appendices
-  - Modulation theory, architecture, implementation, performance analysis
-  - Configuration schema, integration strategy, testing plan
-  - Ready for implementation phase
-
-- `change_tracking/sessions/session_20251009_0900_cpm_design.md` (NEW)
-  - Session log documenting design process
-  - 7 activities completed (requirements → implementation guide)
-  - All design decisions resolved and documented
-
-- `docs/todo/CPM_Implementation_Guide.md` (NEW)
-  - Comprehensive 4-phase implementation guide
-  - Session-sized chunks (1-3 hours each)
-  - Complete test specifications with T-36 compliance
-  - File-by-file modification instructions
-  - Validation criteria and success metrics
-  - Total scope: 2 files modified, 8 files created
-
-### Modified Session 20251005_1950
-
-- `src/TickHotLoopF32.jl`
-  - Lines 4-30: Added 16-phase constants (HEXAD16) and helpers
-  - Line 34: TICKS_PER_BAR = 144 (9 × 16 phase cycles)
-  - Lines 37-58: Extended TickHotLoopState with bar statistics fields
-  - Lines 72-83: Updated state initialization
-  - Lines 86-98: Updated rotation functions for 16-phase
-  - Lines 125-131: Winsorization before bar statistics
-  - Lines 149-205: Bar-based normalization with Q16 scheme
-  - Lines 123, 139, 218: Updated rotation function calls
-
-- `src/PipelineConfig.jl`
-  - Lines 17, 26, 35, 40: Changed to winsorize_delta_threshold::Int32 = 10
-  - Lines 177, 209, 274, 323: Updated TOML parsing and validation
+  - Added BarProcessingConfig struct
+  - Added bar_processing field to PipelineConfig
+  - Updated TOML load/save/validate functions
 
 - `src/PipelineOrchestrator.jl`
-  - Lines 129, 240: Updated parameter passing to winsorize_delta_threshold
+  - Added bar_state field to PipelineManager
+  - Updated create_pipeline_manager
+  - Added process_tick_for_bars! call
 
-- `scripts/analyze_tick_deltas.jl` (NEW)
-  - Analyzes tick-to-tick delta distribution
-  - Computes percentile statistics for threshold selection
-  - Recommends data-driven winsorization thresholds
+- `src/TickDataPipeline.jl`
+  - Added BarProcessor exports
+  - Removed process_single_tick_through_pipeline! from exports
+  - Added internal-only comment
 
-- `scripts/plot_jld2_data.jl`
-  - Lines 90-97: Commented out price_delta trace (removed from plot)
-  - Line 128: Updated title to reflect bar normalization and 16-phase encoding
-  - Lines 145-147: Updated y-axis labels and colors
-  - Line 159: Removed trace2 from plot array
+- `config/default.toml`
+  - Added [bar_processing] section (disabled by default)
 
-- `scripts/stream_ticks_to_jld2.jl`
-  - Line 91: Updated to PRIORITY mode (blocking, no drops)
-  - Line 91: Increased buffer to 262144 (256K) for headroom
+### Created Session 20251016 - Bar Processor Design
 
-### Modified Earlier Sessions
+- `docs/todo/BarProcessor_Implementation_Guide.md`
+  - Complete bar processor design and implementation specification (~1,800 lines)
+  - 9 parts: Executive summary, Architecture, Data structures, Implementation, Tests, Docs, Checklist, Criteria, Appendices
+  - Implementation successfully followed this guide
 
-- `src/TickHotLoopF32.jl`
-  - Line 5: Added QUAD4 constant
-  - Lines 59-61: Fixed apply_quad4_rotation()
-  - Line 187: Use msg.tick_idx for phase
-  - Line 184: Updated normalization_factor calculation
-
-- `src/PipelineConfig.jl`
-  - Line 32: agc_alpha = 0.125
-  - Lines 36-37: min_price=36600, max_price=43300
-
-- `src/VolumeExpansion.jl`
-  - Added nano_delay() function for sub-ms timing
-
-- `scripts/plot_jld2_data.jl`
-  - Added AGC scale visualization
-  - 6x scaling for I/Q visibility
-  - Offset adjustments: Real +1.0, Imag -1.0
-
-### New Scripts Created
-
-- `scripts/stream_ticks_to_jld2.jl` - Main data capture script
-- `scripts/plot_jld2_data.jl` - Interactive plotting with section support
-- `scripts/jld2_to_csv.jl` - CSV export utility
-- `scripts/analyze_winsorization.jl` - Winsorization analysis
-- `scripts/find_price_range.jl` - Price range finder
+- `change_tracking/sessions/session_20251016_bar_processor_design.md`
+  - Complete design session documentation (~600 lines)
 
 ---
 
 ## 🎯 Next Actions
 
-1. **Production Testing with Full Dataset** 🔥 **RECOMMENDED NEXT STEP**
-   - Run `stream_ticks_to_jld2.jl` with all 5.8M ticks using AMC encoder
-   - Compare AMC vs CPM vs HEXAD16 signal characteristics
-   - Verify harmonic reduction (expected: 44-56 dB vs HEXAD16)
-   - Generate constellation diagrams for all three encoders
-   - Measure downstream ComplexBiquadGA performance with AMC signals
-   - Validate Fibonacci filter bank outputs (clean sub-band contributions)
+1. **Data Collection and Analysis** 🔥 **READY**
+   - Use capture_pipeline_data.jl to collect tick/bar datasets
+   - Export to CSV for external analysis
+   - Create visualizations using captured data
+   - When ready: extend script with 160 filter output columns (40 filters × 4 params each)
 
-2. **AMC Performance Benchmarking** (Optional)
-   - Create benchmark_amc_performance.jl (similar to CPM benchmark)
-   - Compare AMC vs CPM vs HEXAD16 latency and throughput
-   - Expected: AMC similar to CPM (~24ns per tick, 400× within budget)
-   - Verify zero allocation in hot loop
+2. **Production Deployment** 🔥 **READY**
+   - Bar processing feature is production-ready
+   - Enable in config by setting bar_processing.enabled = true
+   - Configure ticks_per_bar based on analysis needs (21, 89, 144, 233, 377)
+   - Monitor performance impact (expected: <1% overhead)
+   - Collect user feedback
 
-3. **Analyze Bar Statistics**
+2. **Production Testing with Full Dataset** 🔥 **RECOMMENDED**
+   - Run full validation with 5.8M ticks
+   - Set MAX_TICKS = Int64(0) in validate_bar_processing.jl
+   - Runtime: ~5-10 minutes
+   - Validates OHLC, metadata, signals across entire dataset
+   - Compare performance (enabled vs disabled)
+
+3. **Multi-Timeframe Analysis** (Optional Enhancement)
+   - Run multiple pipelines with different bar sizes simultaneously
+   - Example: 21-tick (fast), 144-tick (medium), 377-tick (slow)
+   - Analyze multi-timeframe signal alignment
+   - Useful for trading strategies
+
+4. **Bar-Level Indicators** (Future Enhancement)
+   - Implement RSI, MACD, Bollinger Bands at bar level
+   - Use bar_complex_signal for momentum indicators
+   - Leverage derivative encoding (position + velocity)
+
+5. **Analyze Bar Statistics**
    - Monitor normalization range (avg_max - avg_min) over time
-   - Verify winsorization clips ~0.5% of deltas as expected
-   - Check bar boundary alignment (144 = 9 × 16 phase cycles)
+   - Verify winsorization clips as expected
+   - Check bar boundary alignment
    - Validate first bar behavior with preloaded reciprocal
-
-4. **Validate I/Q Signal Quality**
-   - Plot constellation diagrams for AMC/CPM/HEXAD16 (Real vs Imag)
-   - AMC: Variable radius (amplitude modulation), 16-tick carrier period
-   - CPM: Unit circle (constant envelope), continuous phase
-   - HEXAD16: 16 discrete phase positions (22.5° steps)
-   - Confirm harmonic differences between encoders
-
-5. **Performance Validation**
-   - Full speed (0ms delay) processing of 5.8M ticks
-   - Verify zero divisions in hot loop
-   - Measure throughput improvement vs AGC implementation
-   - Monitor memory stability with Q16 fixed-point
 
 ---
 
 ## 📊 Current Metrics
 
-- **Implementation Status:** ✅ AMC Encoder COMPLETE - Production Ready (All 3 Encoders Operational)
-- **Encoders Available:**
-  - **AMC (Amplitude-Modulated Continuous Carrier)** - ✅ PRODUCTION, amplitude modulation, 44-56 dB harmonic reduction
-  - **CPM (Continuous Phase Modulation)** - Production, frequency modulation, constant envelope
-  - **HEXAD16** - Legacy, 16-phase discrete, harmonic issues (-6 to -14 dB)
-- **AMC Characteristics:** 16-tick carrier period, variable envelope, filter-compatible amplitude encoding
-- **CPM Performance:** 23.94ns avg latency (6.6% faster than HEXAD16)
-- **Throughput:** 41.8M ticks/sec (CPM) | 40.5M ticks/sec (HEXAD16) | AMC expected similar to CPM
-- **Latency Budget:** 0.24% usage (400× margin vs 10μs budget)
-- **Test Coverage:** 2,334 tests total (100% pass rate)
-  - AMC: 1,156 tests (core, config, integration)
+- **Implementation Status:** ✅ Bar Processor COMPLETE - Production Ready (All Features Operational)
+- **Features Available:**
+  - **Data Capture** - ✅ PRODUCTION, JLD2 export for tick/bar data, columnar format for CSV/plotting
+  - **Bar Processing** - ✅ PRODUCTION, OHLC aggregation, bar-level signals, pass-through enrichment
+  - **Three Encoders** - ✅ PRODUCTION, AMC/CPM/HEXAD16 all operational
+  - **Configuration System** - ✅ PRODUCTION, TOML-based with validation
+  - **Broadcasting System** - ✅ PRODUCTION, triple-split with backpressure
+- **Bar Processing Characteristics:** Pass-through design, 14 bar fields, cumulative normalization, derivative encoding
+- **Bar Processing Performance:** <0.1μs overhead per tick (negligible impact)
+- **Test Coverage:** 6073 tests total (100% pass rate)
+  - Bar Processing: 3739 tests (183 unit + 3556 integration)
+  - AMC: 1,156 tests
   - CPM/System: 1,178 tests
+- **AMC Performance:** Expected similar to CPM (~24ns avg latency)
+- **CPM Performance:** 23.94ns avg latency (6.6% faster than HEXAD16)
+- **Throughput:** 41.8M ticks/sec (CPM) | 40.5M ticks/sec (HEXAD16)
+- **Latency Budget:** 0.24% usage (400× margin vs 10μs budget)
 - **Phase Encoding:**
   - AMC = constant carrier (π/8 rad/tick), amplitude modulation
   - CPM = continuous phase (persistent), frequency modulation
@@ -597,31 +441,25 @@
 - **Performance:** Zero float divisions in hot loop (integer multiply only)
 - **Bar Processing:** Updates every 144 ticks (0.02 divisions/tick amortized)
 - **Winsorization:** Data-driven threshold = 10 (clips top 0.5% of deltas)
-- **Winsorization Position:** BEFORE bar statistics (prevents outlier skew)
-- **Bar-Phase Alignment:** 144 ticks = 9 complete 16-phase cycles (HEXAD16 only)
-- **CPM Characteristics:** Constant envelope (|z|=1.0), Q32 phase accumulation, 1024-entry LUT
-- **Delta Statistics:** Mean abs 1.21, 99.5th percentile = 10
-- **Test Dataset:** 5,361,491 ticks analyzed for threshold calibration
 
 ---
 
 ## 🔍 Key Design Decisions
 
-1. **Three Encoder Architecture:** HEXAD16 (legacy), CPM (frequency mod), AMC (amplitude mod) - all production ready
-2. **AMC Encoder:** Amplitude-modulated continuous carrier, 16-tick period (π/8 rad/tick), 44-56 dB harmonic reduction
-3. **AMC Operation:** Constant phase increment (268,435,456 per tick), variable amplitude (|s|=|normalized_ratio|)
-4. **AMC Filter Compatibility:** Amplitude-based encoding works with Fibonacci filter bank (CPM incompatible - constant envelope)
-5. **CPM Encoder:** Continuous phase modulation with persistent memory, h=0.2 or 0.5 (configurable)
-6. **Q32 Phase Accumulation:** Int32 fixed-point [0, 2^32) → [0, 2π), zero drift, natural wraparound (shared by CPM and AMC)
-7. **1024-Entry LUT:** 0.35° angular resolution, 8KB memory, fits in L1 cache (shared by CPM and AMC - zero additional memory)
-8. **Encoder Selection:** String comparison branching (~2ns overhead), runtime configurable via TOML
-9. **HEXAD-16 Legacy:** 16 phases (22.5° increments) using msg.tick_idx, backward compatible
-10. **Bar-Based Normalization:** 144-tick bars with rolling min/max statistics
-11. **Q16 Fixed-Point Normalization:** Pre-computed reciprocal eliminates float division from hot loop
-12. **Normalization Formula:** (avg_max - avg_min) computed from bar statistics
-13. **Winsorization:** Applied BEFORE bar statistics with data-driven threshold (10)
-14. **Data-Driven Thresholds:** Based on percentile analysis of 5.36M tick deltas
-15. **Phase-Bar Alignment:** 144 ticks = 9 complete 16-phase cycles (HEXAD16 only, perfect alignment)
-16. **Price Validation:** Based on actual data range with safety margin (36600-43300)
-17. **Threading:** Single-threaded by design, safe in multi-threaded apps
-18. **Performance:** CPM 6.6% faster than HEXAD16 (23.94ns vs 24.67ns), AMC expected similar
+1. **Data Capture Architecture:** Columnar format (Dict of arrays), JLD2 storage, extensible schema for filter outputs
+2. **Bar Processing Architecture:** Pass-through enrichment, tick + bar data coexist in BroadcastMessage
+3. **Bar Processing Pattern:** 143/144 messages have bar fields = nothing, 1/144 has complete bar data
+4. **Bar Accumulation:** Incremental OHLC tracking (O(1) per tick), no tick buffering
+5. **Bar Normalization:** Cumulative statistics (ALL bars), periodic recalculation (every N bars)
+6. **Bar Signal Processing:** 12-step pipeline on completion (OHLC → normalization → derivative encoding)
+7. **API Design:** Two patterns - run_pipeline! (high-level) or stream_expanded_ticks loop (manual)
+8. **Internal Functions:** process_single_tick_through_pipeline! not exported (internal use only)
+9. **Three Encoder Architecture:** HEXAD16 (legacy), CPM (frequency mod), AMC (amplitude mod) - all production ready
+10. **AMC Encoder:** Amplitude-modulated continuous carrier, 16-tick period (π/8 rad/tick), 44-56 dB harmonic reduction
+11. **CPM Encoder:** Continuous phase modulation with persistent memory, h=0.2 or 0.5 (configurable)
+12. **Q32 Phase Accumulation:** Int32 fixed-point [0, 2^32) → [0, 2π), zero drift, natural wraparound
+13. **1024-Entry LUT:** 0.35° angular resolution, 8KB memory, shared by CPM and AMC
+14. **Bar-Based Normalization:** 144-tick bars with rolling min/max statistics
+15. **Q16 Fixed-Point Normalization:** Pre-computed reciprocal eliminates float division from hot loop
+16. **Winsorization:** Applied BEFORE bar statistics with data-driven threshold (10)
+17. **Performance:** CPM 6.6% faster than HEXAD16 (23.94ns vs 24.67ns), bar processing <0.1μs overhead

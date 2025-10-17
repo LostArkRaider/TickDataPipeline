@@ -40,6 +40,7 @@ Maintains pipeline state, configuration, and statistics.
 # Fields
 - `config::PipelineConfig`: Pipeline configuration
 - `tickhotloop_state::TickHotLoopState`: Signal processing state
+- `bar_state::BarProcessorState`: Bar processing state
 - `split_manager::TripleSplitManager`: Broadcasting manager
 - `metrics::PipelineMetrics`: Accumulated statistics
 - `is_running::Bool`: Pipeline running status
@@ -48,6 +49,7 @@ Maintains pipeline state, configuration, and statistics.
 mutable struct PipelineManager
     config::PipelineConfig
     tickhotloop_state::TickHotLoopState
+    bar_state::BarProcessorState
     split_manager::TripleSplitManager
     metrics::PipelineMetrics
     is_running::Bool
@@ -82,6 +84,7 @@ function create_pipeline_manager(
     return PipelineManager(
         config,
         create_tickhotloop_state(),
+        create_bar_processor_state(config.bar_processing),
         split_manager,
         PipelineMetrics(),
         false,
@@ -94,7 +97,8 @@ end
 
 Process single tick through all pipeline stages with metrics.
 
-Internal function for per-tick processing with latency tracking.
+**INTERNAL FUNCTION** - Not exported. Used internally by run_pipeline!.
+For custom processing, use stream_expanded_ticks() directly with component functions.
 
 # Arguments
 - `pipeline_manager::PipelineManager`: Pipeline manager
@@ -131,7 +135,8 @@ function process_single_tick_through_pipeline!(
             sp.max_price,
             sp.max_jump,
             sp.encoder_type,
-            sp.cpm_modulation_index
+            sp.cpm_modulation_index,
+            sp.tick_derivative_imag_scale
         )
     catch e
         @warn "Signal processing error: $e"
@@ -146,6 +151,9 @@ function process_single_tick_through_pipeline!(
     end
 
     signal_time_us = Int32((time_ns() - signal_start) ÷ Int64(1000))
+
+    # Stage 2.5: Bar processing (NEW - enriches message with bar data on bar completion)
+    process_tick_for_bars!(msg, pipeline_manager.bar_state)
 
     # Stage 3: Broadcasting
     broadcast_start = time_ns()
@@ -244,13 +252,19 @@ function run_pipeline(
                     sp.max_price,
                     sp.max_jump,
                     sp.encoder_type,
-                    sp.cpm_modulation_index
+                    sp.cpm_modulation_index,
+                    sp.tick_derivative_imag_scale
                 )
             catch e
                 @warn "Signal processing error: $e"
                 errors += Int32(1)
                 continue
             end
+
+            # Stage 2.5: Bar processing (NEW - enriches message with bar data on bar completion)
+            # Note: This function needs bar_state, which run_pipeline doesn't have.
+            # For now, we skip bar processing in the simple run_pipeline interface.
+            # Use run_pipeline! with PipelineManager for bar processing support.
 
             # Stage 3: TripleSplitSystem - Broadcast
             try

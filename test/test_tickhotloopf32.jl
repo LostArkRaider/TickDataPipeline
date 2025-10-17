@@ -56,7 +56,7 @@ using TickDataPipeline
             msg1, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Second tick has real signal
@@ -65,7 +65,7 @@ using TickDataPipeline
             msg2, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Second tick should have non-zero signal
@@ -85,7 +85,7 @@ using TickDataPipeline
             msg, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # First tick should have zero signal
@@ -105,7 +105,7 @@ using TickDataPipeline
             msg1, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
         @test state.last_clean === nothing  # Not initialized
 
@@ -115,7 +115,7 @@ using TickDataPipeline
             msg2, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
         @test state.last_clean == Int32(41971)
 
@@ -125,7 +125,7 @@ using TickDataPipeline
             msg3, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
         @test (msg3.status_flag & FLAG_HOLDLAST) != UInt8(0)
         @test msg3.complex_signal == ComplexF32(0, 0)  # Zero delta
@@ -140,7 +140,7 @@ using TickDataPipeline
             msg1, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Second tick with large jump (delta = 100, max_jump = 50)
@@ -149,7 +149,7 @@ using TickDataPipeline
             msg2, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Should be clipped
@@ -165,7 +165,7 @@ using TickDataPipeline
             msg1, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Very small delta
@@ -174,7 +174,7 @@ using TickDataPipeline
             msg2, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Normalization should respect min_scale
@@ -190,7 +190,7 @@ using TickDataPipeline
             msg1, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Process many large deltas to push AGC to max
@@ -200,7 +200,7 @@ using TickDataPipeline
                 msg, state,
                 Float32(0.0625), Int32(4), Int32(50), Int32(3),
                 Int32(40000), Int32(43000), Int32(50),
-                "hexad16", Float32(0.5)
+                "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
             )
         end
 
@@ -217,7 +217,7 @@ using TickDataPipeline
             msg1, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Second tick with moderate delta
@@ -226,7 +226,7 @@ using TickDataPipeline
             msg2, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Normalized signal should be clipped if exceeds threshold
@@ -243,7 +243,7 @@ using TickDataPipeline
             msg1, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Second tick with delta
@@ -258,7 +258,7 @@ using TickDataPipeline
             msg2, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Message should be modified in-place
@@ -275,7 +275,7 @@ using TickDataPipeline
             msg1, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         @test state.has_delta_ema == false  # Not set on first tick
@@ -286,7 +286,7 @@ using TickDataPipeline
             msg2, state,
             Float32(0.0625), Int32(4), Int32(50), Int32(3),
             Int32(40000), Int32(43000), Int32(50),
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         @test state.has_delta_ema == true
@@ -310,7 +310,7 @@ using TickDataPipeline
             Int32(0),         # Wide price range
             Int32(100000),
             Int32(10000),     # Huge jump limit
-            "hexad16", Float32(0.5)
+            "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
         )
 
         # Should still process successfully
@@ -329,7 +329,7 @@ using TickDataPipeline
                 msg, state,
                 Float32(0.0625), Int32(4), Int32(50), Int32(3),
                 Int32(40000), Int32(43000), Int32(50),
-                "hexad16", Float32(0.5)
+                "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
             )
             push!(messages, msg)
         end
@@ -348,7 +348,7 @@ using TickDataPipeline
                 msg, state,
                 Float32(0.0625), Int32(4), Int32(50), Int32(3),
                 Int32(40000), Int32(43000), Int32(50),
-                "hexad16", Float32(0.5)
+                "hexad16", Float32(0.5), Float32(4.0)  # tick_derivative_imag_scale
             )
         end
 

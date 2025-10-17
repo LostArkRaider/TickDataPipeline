@@ -43,18 +43,26 @@ export get_consumer_stats, get_manager_stats
 
 # Configuration and orchestration (Session 5)
 include("PipelineConfig.jl")
+
+# Bar processing (Session Bar Processor)
+include("BarProcessor.jl")
+
 include("PipelineOrchestrator.jl")
 
 # Exports from PipelineConfig.jl
 export PipelineConfig, create_default_config
-export SignalProcessingConfig, FlowControlConfig, ChannelConfig, PerformanceConfig
+export SignalProcessingConfig, BarProcessingConfig, FlowControlConfig, ChannelConfig, PerformanceConfig
 export load_config_from_toml, save_config_to_toml, validate_config
+
+# Exports from BarProcessor.jl
+export BarProcessorState
+export create_bar_processor_state, process_tick_for_bars!
 
 # Exports from PipelineOrchestrator.jl
 export PipelineManager, PipelineMetrics
 export create_pipeline_manager
 export run_pipeline, run_pipeline!
-export process_single_tick_through_pipeline!
 export stop_pipeline!
+# Note: process_single_tick_through_pipeline! is internal only (not exported)
 
 end # module TickDataPipeline
