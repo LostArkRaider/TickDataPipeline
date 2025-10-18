@@ -103,17 +103,19 @@ struct BarProcessingConfig
     winsorize_bar_threshold::Int32
     max_bar_jump::Int32
     bar_derivative_imag_scale::Float32
+    bar_method::String
 
     function BarProcessingConfig(;
         enabled::Bool = false,
-        ticks_per_bar::Int32 = Int32(144),
-        normalization_window_bars::Int32 = Int32(24),
+        ticks_per_bar::Int32 = Int32(21),
+        normalization_window_bars::Int32 = Int32(120),
         winsorize_bar_threshold::Int32 = Int32(50),
         max_bar_jump::Int32 = Int32(100),
-        bar_derivative_imag_scale::Float32 = Float32(4.0)
+        bar_derivative_imag_scale::Float32 = Float32(4.0),
+        bar_method::String = "boxcar"
     )
         new(enabled, ticks_per_bar, normalization_window_bars,
-            winsorize_bar_threshold, max_bar_jump, bar_derivative_imag_scale)
+            winsorize_bar_threshold, max_bar_jump, bar_derivative_imag_scale, bar_method)
     end
 end
 
@@ -231,9 +233,136 @@ function create_default_config()::PipelineConfig
 end
 
 """
+    load_default_config()::PipelineConfig
+
+Load configuration from the default location (config/pipeline/default.toml).
+
+This is a convenience function that automatically finds and loads the default
+configuration file. If the file doesn't exist, it will be created with default values.
+
+# Returns
+- `PipelineConfig`: Loaded configuration
+
+# Example
+```julia
+using TickDataPipeline
+
+# Load default configuration (most common use case)
+config = load_default_config()
+
+# Create and run pipeline
+manager = create_pipeline_manager(config)
+results = run_pipeline(manager)
+```
+"""
+function load_default_config()::PipelineConfig
+    default_path = get_default_config_path()
+
+    # Ensure default config exists (creates if missing)
+    ensure_config_exists(default_path)
+
+    # Now load it using the standard loader
+    return load_config_from_toml(default_path)
+end
+
+"""
+    get_default_config_path()::String
+
+Get the default configuration file path with current working directory priority.
+
+This function implements a two-tier search strategy:
+1. **First**: Check current working directory (pwd()) for config/pipeline/default.toml
+2. **Second**: Fall back to TickDataPipeline package's config/pipeline/default.toml
+
+This allows projects that use TickDataPipeline as a dependency (e.g., ComplexBiquadGA)
+to maintain their own configuration files instead of always using the package's config.
+
+# Returns
+- `String`: Absolute path to default configuration file
+
+# Search Strategy
+- **Local config found**: Returns pwd()/config/pipeline/default.toml
+- **No local config**: Returns TickDataPipeline/config/pipeline/default.toml
+
+# Examples
+```julia
+# When running from ComplexBiquadGA project with local config:
+path = get_default_config_path()  # → "ComplexBiquadGA/config/pipeline/default.toml"
+
+# When running from TickDataPipeline project:
+path = get_default_config_path()  # → "TickDataPipeline/config/pipeline/default.toml"
+
+# When running from project without local config:
+path = get_default_config_path()  # → "TickDataPipeline/config/pipeline/default.toml"
+```
+"""
+function get_default_config_path()::String
+    # Strategy:
+    # 1. Check current working directory (pwd()) for config/pipeline/default.toml
+    # 2. Fall back to TickDataPipeline package config if not found
+
+    # Try local project config first (for projects using TickDataPipeline as dependency)
+    local_config = joinpath(pwd(), "config", "pipeline", "default.toml")
+    if isfile(local_config)
+        return abspath(local_config)
+    end
+
+    # Fall back to package config (for TickDataPipeline development or no local config)
+    src_dir = @__DIR__
+    package_config = joinpath(dirname(src_dir), "config", "pipeline", "default.toml")
+    return abspath(package_config)
+end
+
+"""
+    ensure_config_exists(toml_path::String)::Nothing
+
+Ensure configuration file exists. If not, create directory and write default config.
+
+# Arguments
+- `toml_path::String`: Path to TOML configuration file
+
+# Behavior
+- If file exists: Does nothing
+- If file missing: Creates directory structure and writes default configuration
+- Logs all actions for user visibility
+"""
+function ensure_config_exists(toml_path::String)::Nothing
+    if isfile(toml_path)
+        @info "Configuration file found: $toml_path"
+        return
+    end
+    
+    @warn "Configuration file not found: $toml_path"
+    @info "Creating default configuration..."
+    
+    # Create directory structure if needed
+    config_dir = dirname(toml_path)
+    if !isdir(config_dir)
+        mkpath(config_dir)
+        @info "Created directory: $config_dir"
+    end
+    
+    # Create and save default configuration
+    default_config = create_default_config()
+    save_config_to_toml(default_config, toml_path)
+    
+    @info "✓ Default configuration created at: $toml_path"
+    @info "  You can now edit this file to customize your pipeline settings."
+    
+    return nothing
+end
+
+"""
     load_config_from_toml(toml_path::String)::PipelineConfig
 
 Load pipeline configuration from TOML file.
+
+If the configuration file doesn't exist, this function will:
+1. Create the directory structure (config/pipeline/)
+2. Write a default configuration file
+3. Load and return that default configuration
+
+This ensures users always have an editable config file and never silently fall back to hardcoded values.
 
 # Arguments
 - `toml_path::String`: Path to TOML configuration file
@@ -241,40 +370,27 @@ Load pipeline configuration from TOML file.
 # Returns
 - `PipelineConfig`: Loaded configuration
 
-# Example TOML Format
-```toml
-pipeline_name = "production"
-description = "Production tick processing pipeline"
-version = "1.0"
-tick_file_path = "data/raw/YM 06-25.Last.txt"
+# Example
+```julia
+# Load from default location
+config = load_config_from_toml(get_default_config_path())
 
-[signal_processing]
-agc_alpha = 0.0625
-agc_min_scale = 4
-agc_max_scale = 50
-winsorize_delta_threshold = 10
-min_price = 39000
-max_price = 44000
-max_jump = 50
-
-[flow_control]
-delay_ms = 1.0
-
-[channels]
-priority_buffer_size = 4096
-standard_buffer_size = 2048
-
-[performance]
-target_latency_us = 500
-max_latency_us = 1000
-target_throughput_tps = 10000.0
+# Load from custom location
+config = load_config_from_toml("config/pipeline/custom.toml")
 ```
 """
 function load_config_from_toml(toml_path::String)::PipelineConfig
+    # Check if the specified file exists
     if !isfile(toml_path)
-        @warn "Config file not found: $toml_path, using defaults"
-        return create_default_config()
+        @warn "Config file not found: $toml_path"
+        @info "Falling back to default configuration..."
+        
+        # Automatically load default config (which will create it if needed)
+        return load_default_config()
     end
+    
+    # File exists, load it normally
+    @info "Loading configuration from: $toml_path"
 
     toml_data = TOML.parsefile(toml_path)
 
@@ -300,11 +416,12 @@ function load_config_from_toml(toml_path::String)::PipelineConfig
     bp = get(toml_data, "bar_processing", Dict{String,Any}())
     bar_processing = BarProcessingConfig(
         enabled = get(bp, "enabled", false),
-        ticks_per_bar = Int32(get(bp, "ticks_per_bar", 144)),
-        normalization_window_bars = Int32(get(bp, "normalization_window_bars", 24)),
+        ticks_per_bar = Int32(get(bp, "ticks_per_bar", 21)),
+        normalization_window_bars = Int32(get(bp, "normalization_window_bars", 120)),
         winsorize_bar_threshold = Int32(get(bp, "winsorize_bar_threshold", 50)),
         max_bar_jump = Int32(get(bp, "max_bar_jump", 100)),
-        bar_derivative_imag_scale = Float32(get(bp, "bar_derivative_imag_scale", 4.0))
+        bar_derivative_imag_scale = Float32(get(bp, "bar_derivative_imag_scale", 4.0)),
+        bar_method = String(get(bp, "bar_method", "boxcar"))
     )
 
     # Parse flow control section
@@ -384,7 +501,8 @@ function save_config_to_toml(config::PipelineConfig, toml_path::String)
             "normalization_window_bars" => config.bar_processing.normalization_window_bars,
             "winsorize_bar_threshold" => config.bar_processing.winsorize_bar_threshold,
             "max_bar_jump" => config.bar_processing.max_bar_jump,
-            "bar_derivative_imag_scale" => config.bar_processing.bar_derivative_imag_scale
+            "bar_derivative_imag_scale" => config.bar_processing.bar_derivative_imag_scale,
+            "bar_method" => config.bar_processing.bar_method
         ),
         "flow_control" => Dict{String,Any}(
             "delay_ms" => config.flow_control.delay_ms
@@ -498,6 +616,9 @@ function validate_config(config::PipelineConfig)::Tuple{Bool, Vector{String}}
     end
     if bp.bar_derivative_imag_scale <= Float32(0.0)
         push!(errors, "bar_derivative_imag_scale must be positive")
+    end
+    if bp.bar_method != "boxcar" && bp.bar_method != "FIR"
+        push!(errors, "bar_method must be either \"boxcar\" or \"FIR\"")
     end
 
     # Validate performance

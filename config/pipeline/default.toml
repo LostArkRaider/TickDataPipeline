@@ -49,15 +49,18 @@ target_throughput_tps = 10000.0
 # Enable bar processing (false = disabled, tick-only mode)
 enabled = true
 
-# Bar size in ticks
-ticks_per_bar = 144
+# Bar size in ticks (21 is optimal for financial data)
+ticks_per_bar = 21
+
+# Bar aggregation method: "boxcar" or "FIR"
+# - "boxcar": Simple 21-point average (fast, minimal memory, some aliasing)
+# - "FIR": Anti-aliasing FIR filter (1087 taps, 80 dB stopband, prevents aliasing)
+bar_method = "FIR"
 
 # Normalization window in bars (recalculate every N bars)
 # Rule of thumb: normalization_window_bars ≥ 20
 # For 21-tick bars: use ~120 bars
-# For 144-tick bars: use ~24 bars
-# For 233-tick bars: use ~20 bars
-normalization_window_bars = 24
+normalization_window_bars = 120
 
 # Winsorize bar deltas (clip to ±threshold)
 winsorize_bar_threshold = 50

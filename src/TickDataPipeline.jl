@@ -45,14 +45,19 @@ export get_consumer_stats, get_manager_stats
 include("PipelineConfig.jl")
 
 # Bar processing (Session Bar Processor)
+include("FIRFilter.jl")
 include("BarProcessor.jl")
 
 include("PipelineOrchestrator.jl")
 
 # Exports from PipelineConfig.jl
-export PipelineConfig, create_default_config
+export PipelineConfig, create_default_config, load_default_config
 export SignalProcessingConfig, BarProcessingConfig, FlowControlConfig, ChannelConfig, PerformanceConfig
 export load_config_from_toml, save_config_to_toml, validate_config
+export get_default_config_path, ensure_config_exists
+
+# Exports from FIRFilter.jl
+export design_decimation_filter, get_predefined_filter
 
 # Exports from BarProcessor.jl
 export BarProcessorState
